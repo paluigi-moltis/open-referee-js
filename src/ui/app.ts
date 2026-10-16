@@ -198,6 +198,16 @@ export function mountApp(root: HTMLElement): void {
       errorBox.hidden = false;
       return;
     }
+    if (!sessionApiKey) {
+      errorBox.textContent = 'Enter your API key in settings first.';
+      errorBox.hidden = false;
+      return;
+    }
+    if (!settings.roles.strong.model) {
+      errorBox.textContent = 'Set the strong model name in settings first.';
+      errorBox.hidden = false;
+      return;
+    }
     errorBox.hidden = true;
     output.replaceChildren();
     runBtn.setAttribute('disabled', '');
@@ -209,6 +219,7 @@ export function mountApp(root: HTMLElement): void {
         apiKey: sessionApiKey,
         rateLimiter,
         maxRetries: settings.maxRetries,
+        timeoutS: settings.requestTimeoutS,
       });
     const providers = { strong: makeProvider(), small: makeProvider() };
     const progress = new ProgressController(progressRoot);
@@ -233,7 +244,10 @@ export function mountApp(root: HTMLElement): void {
           ? 'Run finished (partial report)'
           : 'Run finished — report ready',
       );
-      const report = state?.report as ReviewReport | undefined;
+      let report: ReviewReport | undefined;
+      if (state && state.report !== undefined && typeof state.report === 'object') {
+        report = state.report as ReviewReport;
+      }
       if (report && state) {
         output.replaceChildren(reportView(report, state));
       }

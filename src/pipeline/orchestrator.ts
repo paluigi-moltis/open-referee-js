@@ -44,6 +44,10 @@ export interface StageProgress {
 export interface RunReviewOptions {
   doc: Document;
   settings: AppSettings;
+  /**
+   * Stage 1 calls only the `strong` role; `small` is accepted now so callers
+   * are wired for the later stages (claims/verify/defense) that use it.
+   */
   providers: { strong: ChatProvider; small: ChatProvider };
   onEvent?: (e: StageEvent, progress?: StageProgress) => void;
 }

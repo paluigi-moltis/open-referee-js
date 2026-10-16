@@ -4,7 +4,7 @@ A fully static, client-side TypeScript port of
 [open-referee](https://github.com/paluigi/open-referee): an AI referee that
 reviews academic papers with literature grounding. **Everything runs in your
 browser** — document parsing, the review pipeline, the report. The only
-network traffic is the calls to the LLM endpoints *you* configure (plus
+network traffic is the calls to the LLM endpoints _you_ configure (plus
 CORS-open literature APIs: OpenAlex, Crossref, Tavily, TinyFish).
 
 - Installable as a **PWA** (planned Stage 7): network-first with local
@@ -23,16 +23,16 @@ the run, and a live progress bar.
 Porting roadmap and owner decisions: `docs/exploration.md` (§7) and
 `docs/plans/2026-10-16-implementation-plan.md`.
 
-| Stage | Scope |
-|---|---|
-| 1 ✅ | Skeleton: md ingestion, openai-compatible providers, budget ledger, min-delay rate limiter, orchestrator, report render, UI + progress |
-| 2 | Anthropic/Gemini/Ollama/vLLM adapters, secrets vault, full settings UI |
-| 3 | PDF (pdf.js) + DOCX (mammoth) ingestion |
-| 4 | Claim decomposition, verification lenses, defense–adjudication gate |
-| 5 | Literature: OpenAlex, Crossref, Tavily + TinyFish router, scouting |
-| 6 | Report UX: anchoring, print-to-PDF, run history/resume |
-| 7 | PWA: service worker, cache invalidation on deploy, offline |
-| 8 | Depth presets (fast/standard/deep), release |
+| Stage | Scope                                                                                                                                  |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 ✅  | Skeleton: md ingestion, openai-compatible providers, budget ledger, min-delay rate limiter, orchestrator, report render, UI + progress |
+| 2     | Anthropic/Gemini/Ollama/vLLM adapters, secrets vault, full settings UI                                                                 |
+| 3     | PDF (pdf.js) + DOCX (mammoth) ingestion                                                                                                |
+| 4     | Claim decomposition, verification lenses, defense–adjudication gate                                                                    |
+| 5     | Literature: OpenAlex, Crossref, Tavily + TinyFish router, scouting                                                                     |
+| 6     | Report UX: anchoring, print-to-PDF, run history/resume                                                                                 |
+| 7     | PWA: service worker, cache invalidation on deploy, offline                                                                             |
+| 8     | Depth presets (fast/standard/deep), release                                                                                            |
 
 ## Development
 

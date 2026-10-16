@@ -21,13 +21,14 @@ export interface AppSettings {
   roles: { strong: RoleConfig; small: RoleConfig; vision: RoleConfig };
   /** USD per 1M tokens */
   pricing: Record<string, { input: number; output: number }>;
+  /** Per-attempt request timeout in seconds (AbortController in the adapter). */
   requestTimeoutS: number;
   maxRetries: number;
   /** min delay between LLM calls per provider, in seconds */
   minDelayS: number;
   /** UsageLedger cap */
   maxCostUsd: number;
-  /** search engine priority order */
+  /** Search-engine failover order; consumed by the Stage-5 literature router. */
   searchOrder: string[];
 }
 

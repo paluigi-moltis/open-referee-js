@@ -8,6 +8,8 @@ export interface OpenAICompatibleOptions {
   rateLimiter?: RateLimiter;
   fetchImpl?: typeof fetch;
   maxRetries?: number;
+  /** Per-attempt timeout in seconds (AbortController); undefined = no timeout. */
+  timeoutS?: number;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -47,6 +49,7 @@ export class OpenAICompatibleProvider {
     rateLimiter,
     fetchImpl,
     maxRetries = 3,
+    timeoutS,
     sleep,
   }: OpenAICompatibleOptions) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
@@ -54,8 +57,12 @@ export class OpenAICompatibleProvider {
     this.rateLimiter = rateLimiter;
     this.fetchImpl = fetchImpl ?? ((...args) => fetch(...args));
     this.maxRetries = Math.max(0, Math.floor(maxRetries));
+    this.timeoutMs =
+      timeoutS !== undefined && timeoutS > 0 ? timeoutS * 1000 : undefined;
     this.sleep = sleep ?? defaultSleep;
   }
+
+  private readonly timeoutMs: number | undefined;
 
   async complete(messages: ChatMessage[], spec: ModelSpec): Promise<LLMResponse> {
     await this.rateLimiter?.gate(this.baseUrl);
@@ -76,9 +83,19 @@ export class OpenAICompatibleProvider {
 
     let lastError: LLMError | undefined;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      // Per-attempt timeout: a hung endpoint aborts like a network error and
+      // is retried like one.
+      const controller = new AbortController();
+      const timer =
+        this.timeoutMs !== undefined
+          ? setTimeout(() => controller.abort(), this.timeoutMs)
+          : undefined;
       let res: Response;
       try {
-        res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, init);
+        res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+          ...init,
+          signal: controller.signal,
+        });
       } catch (err) {
         lastError = new LLMError(
           `network error: ${err instanceof Error ? err.message : String(err)}`,
@@ -88,6 +105,8 @@ export class OpenAICompatibleProvider {
           continue;
         }
         throw lastError;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
       }
 
       if (res.status === 429 || res.status >= 500) {
