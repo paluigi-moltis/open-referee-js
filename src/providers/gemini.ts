@@ -18,23 +18,9 @@ interface GenerateContentResponse {
   modelVersion?: string;
 }
 
-const RETRY_BASE_DELAY_MS = 500;
-
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function retryAfterMs(res: Response, now: () => number = Date.now): number | null {
-  const v = res.headers.get('Retry-After');
-  if (v === null || v.trim() === '') return null;
-  const s = Number(v);
-  if (Number.isFinite(s) && s >= 0) return s * 1000;
-  const date = new Date(v);
-  if (!Number.isNaN(date.getTime())) return Math.max(0, date.getTime() - now());
-  return null;
-}
+import { defaultSleep, retryFetch, type RetryFetchArgs } from './retry';
 
 export class GeminiProvider {
   private readonly apiKey: string;
@@ -97,77 +83,38 @@ export class GeminiProvider {
 
     const url = `${GEMINI_BASE}/${spec.model}:generateContent`;
 
-    let lastError: LLMError | undefined;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      // Per-attempt timeout: a hung endpoint aborts like a network error and
-      // is retried like one.
-      const controller = new AbortController();
-      const timer =
-        this.timeoutMs !== undefined
-          ? setTimeout(() => controller.abort(), this.timeoutMs)
-          : undefined;
-      let res: Response;
-      try {
-        res = await this.fetchImpl(url, {
-          ...init,
-          signal: controller.signal,
-        });
-      } catch (err) {
-        lastError = new LLMError(
-          `network error: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        if (attempt < this.maxRetries) {
-          await this.sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
-          continue;
-        }
-        throw lastError;
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-      }
+    const retryArgs: RetryFetchArgs = {
+      fetchImpl: this.fetchImpl,
+      url,
+      init,
+      maxRetries: this.maxRetries,
+      timeoutMs: this.timeoutMs,
+      sleep: this.sleep,
+    };
 
-      if (res.status === 429 || res.status >= 500) {
-        lastError = new LLMError(
-          `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
-          res.status,
-        );
-        if (attempt < this.maxRetries) {
-          const raMs = retryAfterMs(res);
-          await this.sleep(raMs ?? RETRY_BASE_DELAY_MS * 2 ** attempt);
-          continue;
-        }
-        throw lastError;
-      }
+    const res = await retryFetch(retryArgs);
 
-      if (!res.ok) {
-        throw new LLMError(
-          `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
-          res.status,
-        );
-      }
-
-      let parsed: GenerateContentResponse;
-      try {
-        parsed = (await res.json()) as GenerateContentResponse;
-      } catch {
-        throw new LLMError('malformed JSON response from provider');
-      }
-      const cand = parsed.candidates?.[0]?.content?.parts;
-      if (cand === undefined) {
-        throw new LLMError(
-          'Malformed Gemini response: missing candidates[0].content.parts',
-        );
-      }
-      const text = cand.map((p) => p.text ?? '').join('');
-      return {
-        content: text,
-        usage: {
-          promptTokens: parsed.usageMetadata?.promptTokenCount ?? 0,
-          completionTokens: parsed.usageMetadata?.candidatesTokenCount ?? 0,
-        },
-        model: parsed.modelVersion ?? spec.model,
-      };
+    let parsed: GenerateContentResponse;
+    try {
+      parsed = (await res.json()) as GenerateContentResponse;
+    } catch {
+      throw new LLMError('malformed response from provider');
     }
-    throw lastError ?? new LLMError('request failed');
+    const cand = parsed.candidates?.[0]?.content?.parts;
+    if (!Array.isArray(cand)) {
+      throw new LLMError(
+        'Malformed Gemini response: missing candidates[0].content.parts',
+      );
+    }
+    const text = cand.map((p) => p.text ?? '').join('');
+    return {
+      content: text,
+      usage: {
+        promptTokens: parsed.usageMetadata?.promptTokenCount ?? 0,
+        completionTokens: parsed.usageMetadata?.candidatesTokenCount ?? 0,
+      },
+      model: parsed.modelVersion ?? spec.model,
+    };
   }
 
   close(): void {}

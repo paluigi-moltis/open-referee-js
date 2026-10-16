@@ -213,6 +213,16 @@ describe('AnthropicProvider', () => {
     );
   });
 
+  it('throws LLMError (not TypeError) when content is not an array', async () => {
+    const { impl } = mockFetch(() =>
+      jsonResponse(JSON.stringify({ content: 'oops', usage: {} })),
+    );
+    const p = provider(impl);
+    await expect(p.complete([{ role: 'user', content: 'q' }], spec())).rejects.toThrow(
+      LLMError,
+    );
+  });
+
   it('calls rateLimiter.gate with the anthropic key before fetch', async () => {
     const order: string[] = [];
     const { impl } = mockFetch(() => {

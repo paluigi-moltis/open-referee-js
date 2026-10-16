@@ -195,6 +195,16 @@ describe('GeminiProvider', () => {
     );
   });
 
+  it('throws LLMError (not TypeError) when parts is not an array', async () => {
+    const { impl } = mockFetch(() =>
+      jsonResponse(JSON.stringify({ candidates: [{ content: { parts: 'oops' } }] })),
+    );
+    const p = provider(impl);
+    await expect(p.complete([{ role: 'user', content: 'q' }], spec())).rejects.toThrow(
+      LLMError,
+    );
+  });
+
   it('calls rateLimiter.gate with the gemini key before fetch', async () => {
     const order: string[] = [];
     const { impl } = mockFetch(() => {
