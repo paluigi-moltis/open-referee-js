@@ -1,0 +1,103 @@
+import type { ChatProvider } from './base';
+import { LLMError } from './base';
+import type { ProviderType } from '../config/schema';
+import { AnthropicProvider } from './anthropic';
+import { FakeProvider } from './fake';
+import { GeminiProvider } from './gemini';
+import { OllamaProvider, DEFAULT_OLLAMA_BASE_URL } from './ollama';
+import { OpenAICompatibleProvider } from './openai';
+import type { RateLimiter } from './rate_limit';
+
+export interface CreateProviderOptions {
+  providerType: ProviderType;
+  baseUrl?: string;
+  apiKey?: string;
+  rateLimiter?: RateLimiter;
+  requestTimeoutS?: number;
+  maxRetries?: number;
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Build a chat provider from a resolved ProviderConfig.
+ *
+ * The rate limiter is shared across adapters and keyed per adapter
+ * (Anthropic/Gemini: endpoint constant; OpenAI-compatible: baseUrl; Ollama:
+ * baseUrl), so roles hitting the same endpoint share one delay budget.
+ */
+export function createProvider({
+  providerType,
+  baseUrl,
+  apiKey,
+  rateLimiter,
+  requestTimeoutS,
+  maxRetries,
+  fetchImpl,
+  sleep,
+}: CreateProviderOptions): ChatProvider {
+  switch (providerType) {
+    case 'openai_compatible':
+    case 'vllm': {
+      if (!baseUrl) {
+        throw new LLMError('Provider needs a base_url');
+      }
+      return new OpenAICompatibleProvider({
+        baseUrl,
+        apiKey: apiKey ?? '',
+        rateLimiter,
+        fetchImpl,
+        maxRetries,
+        timeoutS: requestTimeoutS,
+        sleep,
+      });
+    }
+    case 'anthropic': {
+      if (!apiKey) {
+        throw new LLMError('Provider has no API key resolved');
+      }
+      return new AnthropicProvider({
+        apiKey,
+        rateLimiter,
+        fetchImpl,
+        maxRetries,
+        timeoutS: requestTimeoutS,
+        sleep,
+      });
+    }
+    case 'gemini': {
+      if (!apiKey) {
+        throw new LLMError('Provider has no API key resolved');
+      }
+      return new GeminiProvider({
+        apiKey,
+        rateLimiter,
+        fetchImpl,
+        maxRetries,
+        timeoutS: requestTimeoutS,
+        sleep,
+      });
+    }
+    case 'ollama':
+      return new OllamaProvider({
+        baseUrl: baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+        rateLimiter,
+        fetchImpl,
+        maxRetries,
+        timeoutS: requestTimeoutS,
+        sleep,
+      });
+    case 'fake':
+      return new FakeProvider();
+    default: {
+      throw new LLMError(`Unknown provider type: ${providerType as string}`);
+    }
+  }
+}
+
+/** Close a name -> provider map; the settings UI loops over this helper. */
+export function closeProviders(providers: Record<string, ChatProvider>): void {
+  for (const p of Object.values(providers)) {
+    p.close();
+  }
+}
