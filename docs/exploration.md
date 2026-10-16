@@ -23,11 +23,11 @@ equivalents. Two **design constraints** (not blockers) shape the architecture:
   Crossref and Tavily all pass (verified `*` / reflected origins). The
   `SearchRouter` must therefore ship with Brave disabled (or proxied by an
   optional user-owned Cloudflare Worker — see §7) while OpenAlex/Crossref/Tavily
-  work directly from the page.
+  work directly from the page. >> Exclude Brave from the JS/Typescript version
 - **C2 — Anthropic requires an explicit browser header.**
   `anthropic-dangerous-direct-browser-access: true`. Gemini/OpenAI-compatible
   endpoints need no special handling; Ollama needs `OLLAMA_ORIGINS=*` on the
-  user's host (documented, not codeable around).
+  user's host (documented, not codeable around). >> Add this header for Anthropic endpoints, leave a note in the readme.md and on the web page for Ollama users
 
 ## 2. Target stack
 
@@ -181,29 +181,22 @@ open-referee-js/
    pipeline-e2e, prompts, providers, regression)
 ```
 
-## 7. Optional escape hatch (explicitly non-goal for v1)
-
-A tiny, optional, user-deployed Cloudflare Worker as a generic CORS proxy for
-Brave Search and any future blocked source. Keeps "the only network traffic is
-the user's own endpoints" true (it *is* their endpoint), but adds deploy
-friction — v1 ships without it and marks Brave as "requires proxy" in the UI.
-
-## 8. Open questions (need owner decisions before implementation)
+## 7. Open questions (need owner decisions before implementation)
 
 1. **Scout sources on day one:** drop PubPeer/PREreview if CORS check fails,
-   or accept the Cloudflare-Worker path earlier (§7)?
+   or accept the Cloudflare-Worker path earlier (§7)? >> Drop if CORS check fails
 2. **Table extraction fidelity:** heuristic port only in v1 (recommended), or
-   invest in transformers.js table detection now?
+   invest in transformers.js table detection now? >> Heuristic only for v1
 3. **Key persistence:** is opt-in passphrase-encrypted local storage wanted,
-   or strictly session-only (strictly session-only is the safer default)?
+   or strictly session-only (strictly session-only is the safer default)? >> opt-in passphrase is welcome
 4. **Parity bar for PR #2 (first code):** happy-path single review run end-to-end
    (DOCX in → report out, fake provider tests green), with PDF/claims/defense
    in follow-ups — or go stage-by-stage with the full test suite ported each
-   time?
+   time? >> go stage by stage
 5. **Repository of record:** push directly to `paluigi/open-referee-js`, or
    maintain the fork-based convention (`paluigi-moltis`) from the Python repo?
    (Note: GitHub cannot fork an empty repo, so the fork would have to be a
-   standalone repo or the branch pushed directly.)
+   standalone repo or the branch pushed directly.) >> maintain the fork based convention
 
 ## 9. What is *not* ported
 
