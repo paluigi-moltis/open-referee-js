@@ -93,6 +93,65 @@ describe('settings UI v2 — provider manager', () => {
     expect(after.providers['ollama-local']).toBeUndefined();
   });
 
+  it('removing a provider drops its vault secret (no resurrection on re-add)', async () => {
+    vi.mocked(prompt).mockReturnValue('pw-remove');
+    const root = mounted();
+    input(root, '#new-provider-name').value = 'anthropic';
+    input(root, '#new-provider-type').value = 'anthropic';
+    click(root.querySelector('#provider-add')!);
+
+    // Enter a key while the vault is UNLOCKED so it lands in the vault.
+    click(root.querySelector('#vault-encrypt')!);
+    await vi.waitFor(() => {
+      expect(vaultIsUnlocked()).toBe(true);
+    });
+    const row = root.querySelector('[data-provider="anthropic"]')!;
+    const key = row.querySelector<HTMLInputElement>('.provider-key')!;
+    key.value = KEY;
+    key.dispatchEvent(new Event('input', { bubbles: true }));
+    change(key);
+    await vi.waitFor(async () => {
+      await expect(getSecret('anthropic')).resolves.toBe(KEY);
+    });
+
+    // Remove → the vault secret must be deleted…
+    click(row.querySelector('.provider-remove')!);
+    await vi.waitFor(async () => {
+      await expect(getSecret('anthropic')).resolves.toBeUndefined();
+    });
+
+    // …so re-adding the same name starts from an EMPTY key field, not the
+    // stale vault value (resolveKey is vault-first).
+    input(root, '#new-provider-name').value = 'anthropic';
+    input(root, '#new-provider-type').value = 'anthropic';
+    click(root.querySelector('#provider-add')!);
+    const fresh = root.querySelector('[data-provider="anthropic"]')!;
+    expect(fresh.querySelector<HTMLInputElement>('.provider-key')!.value).toBe('');
+  });
+
+  it('removing a provider clears role bindings pointing at it', () => {
+    const root = mounted();
+    input(root, '#new-provider-name').value = 'bind-me';
+    input(root, '#new-provider-type').value = 'ollama';
+    click(root.querySelector('#provider-add')!);
+
+    // Bind strong to it.
+    const strongSel = root.querySelector<HTMLSelectElement>('#role-provider-strong')!;
+    strongSel.value = 'bind-me';
+    change(strongSel);
+    input(root, '#strong-model').value = 'llama3';
+
+    const stored = JSON.parse(localStorage.getItem('openreferee.settings.v1') ?? '{}');
+    expect(stored.roles.strong.provider).toBe('bind-me');
+
+    // Remove → binding must reset, in memory AND in storage.
+    const row = root.querySelector('[data-provider="bind-me"]')!;
+    click(row.querySelector('.provider-remove')!);
+    const after = JSON.parse(localStorage.getItem('openreferee.settings.v1') ?? '{}');
+    expect(after.roles.strong.provider).toBe('');
+    expect(after.roles.strong.model).toBe('');
+  });
+
   it('edits baseUrl inline and persists it', () => {
     const root = mounted();
     input(root, '#new-provider-name').value = 'vllm-x';

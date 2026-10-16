@@ -12,11 +12,12 @@
 import { loadSettings, saveSettings } from '../config/storage';
 import type { AppSettings, ProviderType } from '../config/schema';
 import {
-  unlockVault,
-  lockVault,
-  vaultIsUnlocked,
-  setSecret,
+  deleteSecret,
   getSecret,
+  lockVault,
+  setSecret,
+  unlockVault,
+  vaultIsUnlocked,
 } from '../config/secrets';
 import { readMarkdown } from '../ingestion/readers_md';
 import { createProvider, closeProviders } from '../providers/factory';
@@ -235,10 +236,29 @@ function settingsPanel(settings: AppSettings, onChange: () => void): SettingsUiH
     removeBtn.addEventListener('click', () => {
       delete settings.providers[name];
       sessionKeys.delete(name);
+      // Also drop the vault secret: leaving it would let re-adding a
+      // provider with the same name silently resurrect the old key
+      // (resolveKey is vault-first).
+      if (vaultIsUnlocked()) {
+        deleteSecret(name).catch(() => {
+          /* vault write failed; secret stays until removed manually */
+        });
+      }
+      // Clear role bindings pointing at the removed provider — a stale
+      // binding would round-trip through localStorage and only fail at
+      // run preflight.
+      let bindingsChanged = false;
+      for (const role of ['strong', 'small', 'vision'] as const) {
+        if (settings.roles[role]?.provider === name) {
+          settings.roles[role].provider = '';
+          settings.roles[role].model = '';
+          bindingsChanged = true;
+        }
+      }
       saveSettings(settings);
       row.remove();
       rebuildRoleSelects();
-      onChange();
+      if (bindingsChanged) onChange();
     });
     row.appendChild(removeBtn);
 

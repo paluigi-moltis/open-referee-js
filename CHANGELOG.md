@@ -9,6 +9,27 @@ versioning starts at 0.x until the Stage-8 release.
 Stage 1 skeleton of the static client-side TS port of
 [open-referee](https://github.com/paluigi/open-referee).
 
+### Stage 2 — full providers, secrets vault, settings UI
+
+- Provider factory (`createProvider`) mapping all six provider types with
+  Python-parity validation errors; **Anthropic** adapter (browser-direct-
+  access header, `2023-06-01` version pin), **Gemini** adapter
+  (`x-goog-api-key` header — keys never in URLs), **Ollama** native
+  `/api/chat` adapter (no auth, per-baseUrl rate limiting); vLLM reuses the
+  OpenAI-compatible adapter.
+- Shared `retryFetch` helper: one retry contract (429/5xx/network,
+  exponential backoff, `Retry-After`) enforced across all adapters.
+- **Secrets vault**: opt-in passphrase-encrypted key storage — PBKDF2-SHA256
+  (310k iters) → AES-GCM 256, per-vault salt, fresh IV per write; session-only
+  in-memory keys remain the default; vault locks on page unload; corrupted
+  payloads and wrong passphrases surface as typed `VaultError`s.
+- **Settings UI v2**: named provider manager (add/remove/inline baseUrl edit),
+  strong/small/vision role bindings, vault controls (set passphrase, unlock,
+  lock, state indicator); removing a provider drops its vault secret and
+  clears stale role bindings; API keys never reach `localStorage`.
+
+## Stage 1
+
 ### Added
 
 - Vite + vanilla TypeScript project (strict mode), Vitest suite (happy-dom),

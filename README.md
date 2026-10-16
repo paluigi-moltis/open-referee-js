@@ -54,10 +54,10 @@ pnpm build        # production bundle in dist/
 - **API key storage**: by default a key you type lives in memory for the
   current session only — it is never written to `localStorage` and disappears
   on reload. Optionally, use "set passphrase + encrypt keys" to create a
-  passphrase-encrypted vault (PBKDF2-SHA256 → AES-GCM 256, random salt/IV per
-  write): keys are then stored encrypted under `openreferee.vault.v1` and
-  never in plaintext. The vault locks on page unload or via the "lock"
-  button; a wrong passphrase cannot open it.
+  passphrase-encrypted vault (PBKDF2-SHA256 → AES-GCM 256, per-vault salt,
+  fresh IV on every write): keys are then stored encrypted under
+  `openreferee.vault.v1` and never in plaintext. The vault locks on page
+  unload or via the "lock" button; a wrong passphrase cannot open it.
 - **Anthropic**: the browser call sends
   `anthropic-dangerous-direct-browser-access: true` (the Stage-2 adapter
   sets this header on every request).
