@@ -49,9 +49,12 @@ const DOCUMENT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </w:document>`;
 
 const zip = new JSZip();
-zip.file('[Content_Types].xml', CONTENT_TYPES);
-zip.file('_rels/.rels', ROOT_RELS);
-zip.file('word/document.xml', DOCUMENT);
+// Fixed dates so regeneration is byte-stable (JSZip defaults to now()).
+const FIXED_DATE = new Date(Date.UTC(2026, 0, 1, 0, 0, 0));
+const opts = { date: FIXED_DATE, createFolders: false };
+zip.file('[Content_Types].xml', CONTENT_TYPES, opts);
+zip.file('_rels/.rels', ROOT_RELS, opts);
+zip.file('word/document.xml', DOCUMENT, opts);
 
 const out = path.join(
   path.dirname(fileURLToPath(import.meta.url)),

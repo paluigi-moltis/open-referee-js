@@ -3,11 +3,11 @@
  * pack.
  *
  * Port of Python `open_referee/ingestion/artifacts.py`. Regexes are byte-
- * identical to the Python source (including the odd double-backslash latex
- * command patterns — they encode the semantics of the Python module, quirks
- * and all). PDF table extraction lives in readers/pdf.ts; this module keeps
- * the format-independent logic so markdown/docx documents get the same
- * treatment.
+ * identical to the Python source — with ONE documented divergence: the
+ * latex-command symbol regex (Python uses a double-backslash that never
+ * matches; see collectSymbols below). PDF table extraction lives in
+ * readers/pdf.ts; this module keeps the format-independent logic so
+ * markdown/docx documents get the same treatment.
  */
 
 import { Block, BlockType, Document } from './document';
@@ -203,9 +203,15 @@ function sameSection(
 
 /**
  * Python `_collect_symbols`: symbols worth tracking — math tokens,
- * subscripted names, latex commands surviving extraction. Note: the Python
- * source regex is `\\[A-Za-z]+` on a raw string, i.e. it matches a literal
- * backslash followed by letters; this port reproduces that exactly.
+ * subscripted names, latex commands surviving extraction.
+ *
+ * DOCUMENTED DIVERGENCE from Python: the Python source regex
+ * `r"\\\\[A-Za-z]+"` (artifacts.py:177) means TWO literal backslashes, so
+ * it matches nothing on realistic input like `\alpha` — effectively dead
+ * code there (verified in the project venv). This port uses ONE backslash,
+ * so `\alpha`-style latex tokens ARE collected. This changes overlap
+ * counts for definitions packs on latex-heavy text — intentional:
+ * the Python behavior is a latent bug, not a spec.
  */
 function collectSymbols(text: string): Set<string> {
   const syms = new Set<string>();

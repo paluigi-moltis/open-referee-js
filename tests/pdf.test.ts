@@ -109,6 +109,33 @@ describe('documentFromPdf (fixture end-to-end)', () => {
     expect(headings).toHaveLength(1);
   });
 
+  it('detectTables stays fast on a dense per-glyph page (perf regression)', () => {
+    // 32k distinct-baseline items (per-glyph runs from some generators) —
+    // the pre-frontier implementation took ~9 s here (O(items x rows)).
+    const items: TextItemLike[] = [];
+    for (let i = 0; i < 32_000; i++) {
+      items.push(item(`g${i}`, (i % 7) * 60, 700 - i * 0.4));
+    }
+    const t0 = performance.now();
+    const tables = detectTables(items);
+    const ms = performance.now() - t0;
+    expect(tables.length).toBeLessThanOrEqual(1);
+    expect(ms).toBeLessThan(1000);
+  });
+
+  it('detectTables still finds an aligned grid after the frontier change', () => {
+    // 3 rows x 3 aligned columns
+    const items: TextItemLike[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let cIdx = 0; cIdx < 3; cIdx++) {
+        items.push(item(`r${r}c${cIdx}`, 70 + cIdx * 100, 700 - r * 20));
+      }
+    }
+    const tables = detectTables(items);
+    expect(tables).toHaveLength(1);
+    expect(tables[0]).toHaveLength(3);
+  });
+
   it('produces no figures (documented v1 deviation) and no spurious tables', async () => {
     const doc = await documentFromPdf(readFixture(), 'minimal');
     expect(doc.figures).toEqual([]);

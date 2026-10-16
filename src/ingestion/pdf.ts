@@ -106,25 +106,46 @@ export function detectTables(items: TextItemLike[]): (string | null)[][][] {
     y: it.transform[5] ?? 0,
     str: it.str.trim(),
   }));
-  // cluster rows by y
+  // cluster rows by y. Y-bucketed: cells are pre-sorted by descending y, so
+  // each cell can only merge into a row whose anchor y is within EPSILON —
+  // keep a small active frontier instead of scanning ALL rows (linear
+  // rows.find made dense per-glyph pages O(items x rows), ~9 s at 32k
+  // items; the frontier keeps it near-linear).
   cells.sort((a, b) => b.y - a.y);
   const rows: Cell[][] = [];
+  let frontier: { y: number; row: Cell[] }[] = [];
   for (const c of cells) {
-    const row = rows.find((r) => Math.abs(r[0]!.y - c.y) <= LINE_EPSILON);
-    if (row) row.push(c);
-    else rows.push([c]);
+    let row: Cell[] | undefined;
+    frontier = frontier.filter((f) => {
+      if (Math.abs(f.y - c.y) <= LINE_EPSILON * 4) return true;
+      // anchor drifted out of reach — rows never come back once y moves on
+      return false;
+    });
+    const hit = frontier.find((f) => Math.abs(f.y - c.y) <= LINE_EPSILON);
+    if (hit) {
+      row = hit.row;
+    } else {
+      row = [];
+      rows.push(row);
+      frontier.push({ y: c.y, row });
+    }
+    row.push(c);
   }
   // need >= 3 rows to form a table (header + separator logic needs >= 2
   // content rows; a lone pair is usually just two aligned paragraphs)
   if (rows.length < 3) return [];
-  // cluster columns by x across all rows
+  // cluster columns by x across all rows. Sort-based merge: sort all x
+  // values once and sweep — avoids the O(cells x colXs) `some` scan.
   const xTolerance = 10;
+  const allX: number[] = [];
+  for (const row of rows) for (const c of row) allX.push(c.x);
+  allX.sort((a, b) => a - b);
   const colXs: number[] = [];
-  for (const row of rows) {
-    for (const c of row) {
-      if (!colXs.some((x) => Math.abs(x - c.x) <= xTolerance)) {
-        colXs.push(c.x);
-      }
+  let anchor = NaN;
+  for (const x of allX) {
+    if (colXs.length === 0 || Math.abs(anchor - x) > xTolerance) {
+      colXs.push(x);
+      anchor = x;
     }
   }
   colXs.sort((a, b) => a - b);
@@ -170,6 +191,17 @@ export async function documentFromPdf(
   titleHint = '',
 ): Promise<RefereeDocument> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // pdf.js REQUIRES a worker in the browser: without workerSrc it throws
+  // `No "GlobalWorkerOptions.workerSrc" specified.` at getDocument() —
+  // invisible to the Node test suite (Node gets a fake-worker fallback).
+  // The `?url` import makes Vite emit pdf.worker.min.mjs as an asset and
+  // hand us its hashed URL.
+  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      'pdfjs-dist/build/pdf.worker.min.mjs',
+      import.meta.url,
+    ).href;
+  }
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   const loadingTask = pdfjs.getDocument({ data: bytes });
   const doc = await loadingTask.promise;
