@@ -6,7 +6,7 @@ PR #2 branch content, which PR #2 merges into main).
 ## Scope (from the 8-stage plan)
 
 1. **Provider factory** — `src/providers/factory.ts`: `createProvider(role,
-   settings, {rateLimiter, sessionKeys})` mirroring Python `factory.py`:
+settings, {rateLimiter, sessionKeys})` mirroring Python `factory.py`:
    resolves role → provider config → adapter by `ProviderType`. Unknown role
    or missing key → `LLMError` with the Python wording.
 2. **New adapters** (retry/backoff/timeout parity with the openai adapter,
@@ -44,7 +44,7 @@ PR #2 branch content, which PR #2 merges into main).
 ## Design decisions (Stage-1 review carryovers)
 
 - `ModelSpec.provider` keeps carrying the **role name** for ledger
-  bookkeeping; the *provider id* rides on `ProviderConfig` resolution inside
+  bookkeeping; the _provider id_ rides on `ProviderConfig` resolution inside
   the factory. A rename is a breaking export change — the factory isolates
   it.
 - `RateLimiter` keyed by provider **baseUrl** (roles sharing an endpoint
