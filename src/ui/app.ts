@@ -116,10 +116,14 @@ function settingsPanel(settings: AppSettings, onChange: () => void): SettingsUiH
     vaultError.textContent = '';
     (async () => {
       await unlockVault(p1);
-      // Move session keys into the vault.
+      // Move session keys into the vault…
       for (const [name, key] of sessionKeys) {
         await setSecret(name, key);
       }
+      // …then drop the in-memory copies: after migration, lockVault() must
+      // actually lock — resolveKey must not fall back to stale plaintexts.
+      sessionKeys.clear();
+      for (const input of keyInputs.values()) input.value = '';
       refreshVaultIndicator();
     })().catch((err: unknown) => {
       vaultError.textContent = err instanceof Error ? err.message : String(err);

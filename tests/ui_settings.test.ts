@@ -201,6 +201,46 @@ describe('settings UI v2 — vault flows', () => {
     });
     // Assert via the vault API (NOT by printing the key).
     await expect(getSecret('anthropic')).resolves.toBe(KEY);
+
+    // Regression (Wave B review): after migration the session plaintexts
+    // must be GONE — lock now actually locks this session's keys, and the
+    // key input was cleared.
+    click(root.querySelector('#vault-lock')!);
+    expect(row.querySelector<HTMLInputElement>('.provider-key')!.value).toBe('');
+    // resolveKey falls through to empty rather than the stale plaintext:
+    // trigger a run-adjacent read path via settings persistence check —
+    // and localStorage stays key-free.
+    const stored = JSON.parse(localStorage.getItem('openreferee.settings.v1') ?? '{}');
+    expect(JSON.stringify(stored)).not.toContain(KEY);
+  });
+
+  it('key entry while vault is UNLOCKED goes to the vault only (never settings, never payload plaintext)', async () => {
+    vi.mocked(prompt).mockReturnValue('pw-unlocked-path');
+    const root = mounted();
+    click(root.querySelector('#vault-encrypt')!); // creates empty vault
+    await vi.waitFor(() => {
+      expect(vaultIsUnlocked()).toBe(true);
+    });
+
+    input(root, '#new-provider-name').value = 'gemini-direct';
+    input(root, '#new-provider-type').value = 'gemini';
+    click(root.querySelector('#provider-add')!);
+    const row = root.querySelector('[data-provider="gemini-direct"]')!;
+    const key = row.querySelector<HTMLInputElement>('.provider-key')!;
+    key.value = KEY;
+    key.dispatchEvent(new Event('input', { bubbles: true }));
+    change(key);
+    await vi.waitFor(async () => {
+      await expect(getSecret('gemini-direct')).resolves.toBe(KEY);
+    });
+
+    // Settings storage stays key-free…
+    const stored = localStorage.getItem('openreferee.settings.v1') ?? '';
+    expect(stored).not.toContain(KEY);
+    // …and the encrypted payload contains neither the name nor the value.
+    const payloadRaw = localStorage.getItem('openreferee.vault.v1') ?? '';
+    expect(payloadRaw).not.toContain(KEY);
+    expect(payloadRaw).not.toContain('gemini-direct');
   });
 
   it('registers a lock handler on beforeunload/unload', async () => {

@@ -22,6 +22,33 @@ afterEach(() => {
 });
 
 describe('secrets vault', () => {
+  it('a corrupted-but-shape-valid payload raises VaultError, not a raw crash', async () => {
+    // Shape-valid JSON, but the salt is not valid base64.
+    localStorage.setItem(
+      VAULT_KEY,
+      JSON.stringify({
+        v: 1,
+        salt: '!!!not-base64!!!',
+        iv: 'AAAAAAAAAAAAAAAA',
+        ct: 'AAAA',
+      }),
+    );
+    await expect(unlockVault('whatever')).rejects.toThrow(VaultError);
+    await expect(unlockVault('whatever')).rejects.toThrow(/corrupted/);
+    // Bad base64 in iv/ct also reports corrupted — and must NOT be
+    // mislabeled as 'invalid passphrase'.
+    localStorage.setItem(
+      VAULT_KEY,
+      JSON.stringify({
+        v: 1,
+        salt: btoa('0123456789abcdef'),
+        iv: '***',
+        ct: 'AAAA',
+      }),
+    );
+    await expect(unlockVault('whatever')).rejects.toThrow(/corrupted/);
+  });
+
   it('creates the vault on first unlock and roundtrips secrets', async () => {
     expect(vaultIsUnlocked()).toBe(false);
     await unlockVault('correct horse battery staple');

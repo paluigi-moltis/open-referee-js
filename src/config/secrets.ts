@@ -137,17 +137,32 @@ export async function unlockVault(passphrase: string): Promise<void> {
     cachedSecrets = {};
     return;
   }
-  const key = await deriveKey(passphrase, fromB64(payload.salt));
+  // All decoding stays inside its own try: a shape-valid payload with bad
+  // base64 must surface as VaultError('vault payload is corrupted'), not a
+  // raw InvalidCharacterError and not 'invalid passphrase'.
+  let salt: Uint8Array;
+  let iv: Uint8Array;
+  let ct: Uint8Array;
   try {
+    salt = fromB64(payload.salt);
+    iv = fromB64(payload.iv);
+    ct = fromB64(payload.ct);
+  } catch {
+    throw new VaultError('vault payload is corrupted');
+  }
+  try {
+    const key = await deriveKey(passphrase, salt);
     const pt = await subtle().decrypt(
-      { name: 'AES-GCM', iv: fromB64(payload.iv) as BufferSource },
+      { name: 'AES-GCM', iv: iv as BufferSource },
       key,
-      fromB64(payload.ct) as BufferSource,
+      ct as BufferSource,
     );
     cachedSecrets = JSON.parse(new TextDecoder().decode(pt)) as Record<string, string>;
     vaultKey = key;
-    activeSalt = fromB64(payload.salt);
+    activeSalt = salt;
   } catch {
+    // AES-GCM authentication failure on a well-formed payload means the
+    // passphrase doesn't match (or the ciphertext was truncated).
     throw new VaultError('invalid passphrase');
   }
 }
@@ -167,9 +182,18 @@ export async function setSecret(name: string, value: string): Promise<void> {
   if (vaultKey === null) {
     throw new VaultError('vault is locked');
   }
+  // Update the cache synchronously and revert if the write fails, so two
+  // overlapping calls can't diverge cache from storage (last-write-wins on
+  // the whole-dict re-encryption).
+  const prev = cachedSecrets;
   const next = { ...(cachedSecrets ?? {}), [name]: value };
-  await writePayload(next, vaultKey, activeSalt as Uint8Array);
   cachedSecrets = next;
+  try {
+    await writePayload(next, vaultKey, activeSalt as Uint8Array);
+  } catch (err) {
+    cachedSecrets = prev;
+    throw err;
+  }
 }
 
 /** Decrypts once per unlock, then serves from the in-memory cache. */
@@ -185,10 +209,16 @@ export async function deleteSecret(name: string): Promise<void> {
     throw new VaultError('vault is locked');
   }
   if (cachedSecrets !== null && name in cachedSecrets) {
+    const prev = cachedSecrets;
     const next = { ...cachedSecrets };
     delete next[name];
-    await writePayload(next, vaultKey, activeSalt as Uint8Array);
     cachedSecrets = next;
+    try {
+      await writePayload(next, vaultKey, activeSalt as Uint8Array);
+    } catch (err) {
+      cachedSecrets = prev;
+      throw err;
+    }
   }
 }
 
