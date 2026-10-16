@@ -1,0 +1,91 @@
+/** Minimal styling for the Open Referee UI. */
+:root {
+  font-family: system-ui, sans-serif;
+  line-height: 1.45;
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1rem;
+  color: #1a1a1a;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.5rem 0;
+}
+
+.row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+}
+
+fieldset {
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+
+progress.indeterminate {
+  width: 100%;
+}
+
+.stage-list {
+  list-style: none;
+  padding: 0;
+}
+
+.stage-list li::before {
+  content: '○ ';
+}
+
+.stage-list li[data-status='running']::before {
+  content: '◐ ';
+}
+
+.stage-list li[data-status='done']::before {
+  content: '● ';
+}
+
+.stage-list li[data-status='done'] {
+  color: #1a7f37;
+}
+
+.stage-list li[data-status='failed']::before {
+  content: '✗ ';
+}
+
+.stage-list li[data-status='failed'] {
+  color: #c62828;
+}
+
+.stage-list li[data-status='skipped']::before {
+  content: '— ';
+}
+
+.stage-list li[data-status='skipped'] {
+  color: #888;
+}
+
+.error {
+  color: #c62828;
+}
+
+blockquote {
+  border-left: 3px solid #999;
+  margin: 0.4em 0;
+  padding: 0.1em 1em;
+  color: #444;
+  font-style: italic;
+}
+
+.comment-list blockquote {
+  display: inline;
+}
+
+.report-meta {
+  color: #555;
+  font-size: 0.9em;
+}
