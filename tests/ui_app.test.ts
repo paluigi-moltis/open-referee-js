@@ -39,7 +39,16 @@ describe('mountApp shell', () => {
     document.body.appendChild(root);
     mountApp(root);
     expect(root.querySelector('#settings-panel')).not.toBeNull();
-    expect(root.querySelector('#api-key')).not.toBeNull();
+    // Stage 2: keys are per-provider (password inputs inside provider rows).
+    expect(root.querySelector('#provider-list')).not.toBeNull();
+    expect(root.querySelector('#provider-add')).not.toBeNull();
+    expect(root.querySelector('#vault-state')).not.toBeNull();
+    expect(root.querySelector('#vault-encrypt')).not.toBeNull();
+    expect(root.querySelector('#vault-unlock')).not.toBeNull();
+    expect(root.querySelector('#vault-lock')).not.toBeNull();
+    expect(root.querySelector('#role-provider-strong')).not.toBeNull();
+    expect(root.querySelector('#role-provider-small')).not.toBeNull();
+    expect(root.querySelector('#role-provider-vision')).not.toBeNull();
     expect(root.querySelector('#file-input')?.getAttribute('accept')).toBe(
       '.md,.markdown,.txt',
     );
