@@ -33,35 +33,36 @@ equivalents. Two **design constraints** (not blockers) shape the architecture:
 
 ## 2. Target stack
 
-| Concern | Choice | Rationale |
-|---|---|---|
-| Build | **Vite 7** + vanilla TS (no framework) | The upstream UI is server-rendered htmx/Alpine; the port is a JS app that talks to LLMs — a framework buys nothing at this size, and the whole JS bundle must be vendored/bundled for the static-site + SW-cache goal. |
-| Tests | **Vitest** | Mirrors the 74-test pytest surface 1:1 (same FakeProvider scripting model, same tolerant-provider shim pattern for e2e). |
-| Lint/format | ESLint flat + Prettier | CI parity with ruff/black. |
-| Package | pnpm | Fast, strict, Pages-friendly. |
-| CI | GitHub Actions: lint + typecheck + test + build | Same role as the Python repo's. |
-| Hosting | GitHub Pages (workflow included) | Fully static; PWA served from root. |
+| Concern     | Choice                                          | Rationale                                                                                                                                                                                                              |
+| ----------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build       | **Vite 7** + vanilla TS (no framework)          | The upstream UI is server-rendered htmx/Alpine; the port is a JS app that talks to LLMs — a framework buys nothing at this size, and the whole JS bundle must be vendored/bundled for the static-site + SW-cache goal. |
+| Tests       | **Vitest**                                      | Mirrors the 74-test pytest surface 1:1 (same FakeProvider scripting model, same tolerant-provider shim pattern for e2e).                                                                                               |
+| Lint/format | ESLint flat + Prettier                          | CI parity with ruff/black.                                                                                                                                                                                             |
+| Package     | pnpm                                            | Fast, strict, Pages-friendly.                                                                                                                                                                                          |
+| CI          | GitHub Actions: lint + typecheck + test + build | Same role as the Python repo's.                                                                                                                                                                                        |
+| Hosting     | GitHub Pages (workflow included)                | Fully static; PWA served from root.                                                                                                                                                                                    |
 
 ## 3. Component-by-component port map
 
 Python module → browser equivalent, with the load-bearing notes.
 
 ### 3.1 Ingestion (`ingestion/readers.py`, `artifacts.py`, `document.py`)
+
 - **PDF** (`pymupdf`/`fitz`) → **pdf.js** (Mozilla, ~350 KB lazy chunk).
   Text extraction per page is direct. Two upstream features need real work:
-  - *Table extraction* (`find_tables` parsed cells) → **un-pdf** has no table
+  - _Table extraction_ (`find_tables` parsed cells) → **un-pdf** has no table
     parser; port the heuristic line-clusterer over pdf.js text items, or ship
     [table-transformer](https://huggingface.co/microsoft/table-transformer-detection)
     via transformers.js behind a depth-preset flag (heavy, ~50 MB model —
     v1: heuristics only).
-  - *Figure region renders* (150 dpi) → pdf.js canvas render of the viewport
+  - _Figure region renders_ (150 dpi) → pdf.js canvas render of the viewport
     clip; direct equivalent.
 - **DOCX** (`python-docx`) → **mammoth** (docx→HTML) + a small style-map, or
   **docx4js** for raw XML. v1: mammoth → markdown, mirroring upstream's
   markdown-normalized intermediate.
 - **Definitions pack** (`artifacts.py`: theorem environments + symbol-matched
   definitions) → pure string/regex logic, ports mechanically.
-- *Caveat:* PDF text-order fidelity differs between pymupdf and pdf.js; the
+- _Caveat:_ PDF text-order fidelity differs between pymupdf and pdf.js; the
   quote-anchoring matcher (§3.5) must use fuzzy matching already present
   upstream (exact → quote → token-overlap), which absorbs most of it. Known
   risk: multi-column layouts. Mitigation: reuse upstream's reading-order
@@ -69,6 +70,7 @@ Python module → browser equivalent, with the load-bearing notes.
   level by design, never drops a comment).
 
 ### 3.2 Providers (`providers/`)
+
 - `ChatProvider` (openai_compatible, anthropic, gemini, ollama, vllm, fake) →
   thin `fetch` adapters. **Streaming (SSE) parsing in the browser** is
   straightforward (`fetch` + `ReadableStream`).
@@ -79,11 +81,12 @@ Python module → browser equivalent, with the load-bearing notes.
   per-tab `sessionStorage`), with an explicit opt-in "remember on this device"
   using WebCrypto AES-GCM keyed by a user passphrase (non-extractable key
   material; a stolen `localStorage` blob is useless without the passphrase).
-  Default is *not remembered*.
+  Default is _not remembered_.
 - Anthropic browser header (C2), Gemini's `x-goog-api-key` header (avoids
   `?key=` in URLs/logs), Ollama CORS env documented in the settings UI.
 
 ### 3.3 Pipeline (`pipeline/`)
+
 - Orchestrator (triage → claims → survey → scout → verify → challenge →
   bibliography → meta → validator → assemble) → plain TS `async` state machine,
   **not** Web Workers for the LLM phases (they're I/O-bound). One Worker only
@@ -105,6 +108,7 @@ Python module → browser equivalent, with the load-bearing notes.
 - Depth presets `fast/standard/deep` → same config shape.
 
 ### 3.4 Literature (`literature/`)
+
 - `OpenAlexClient` (+ raw-REST fallback) → direct `fetch` port (CORS ✓).
 - Crossref polite pool (mailto in UA) → direct (CORS ✓).
 - `SearchRouter` (user-ordered failover) → direct; **Tavily ✓, Brave ✗ (C1)**.
@@ -116,6 +120,7 @@ Python module → browser equivalent, with the load-bearing notes.
   run (upstream best-effort contract).
 
 ### 3.5 Report (`report/`)
+
 - Canonical `ReviewReport` JSON → same schema (shared contract with Python
   repo; add a JSON-Schema file so both repos can validate).
 - Markdown export → trivial. **PDF export** (`weasyprint`) → the one place
@@ -123,6 +128,7 @@ Python module → browser equivalent, with the load-bearing notes.
   (zero-dependency, "Save as PDF"). No weasyprint-class fidelity needed.
 
 ### 3.6 Config & server → settings UI only
+
 - `config.yaml`/env-var indirection disappears: there is no server. Settings =
   Typed TS object persisted in `localStorage` (llm endpoints, roles→models,
   search-engine order, depth, budget). Secrets per §3.2. Provide
@@ -200,7 +206,7 @@ open-referee-js/
    (Note: GitHub cannot fork an empty repo, so the fork would have to be a
    standalone repo or the branch pushed directly.) >> maintain the fork based convention
 
-## 8. What is *not* ported
+## 8. What is _not_ ported
 
 FastAPI server, htmx/Alpine server-rendered pages, SSE transport, Docker/PyPI
 packaging, env-var config indirection, `open-referee serve` CLI. Their

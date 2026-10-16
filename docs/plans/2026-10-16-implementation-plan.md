@@ -37,16 +37,16 @@ marked + dompurify, vite-plugin-pwa (workbox), GitHub Actions + Pages.
 
 ## Stage roadmap (one PR each)
 
-| Stage | PR | Scope |
-|---|---|---|
-| 1 | #2 | Skeleton: config, fake+openai providers, usage ledger, **rate limiter**, md ingestion, prompts, state machine, minimal pipeline e2e, report render, UI shell |
-| 2 | #3 | Full providers (anthropic/gemini/ollama/vllm), secrets vault, settings UI |
-| 3 | #4 | DOCX + PDF ingestion (worker), definitions pack, artifact extraction |
-| 4 | #5 | Claims decomposition, lenses, verify fan-out, defense–adjudication gate |
-| 5 | #6 | Literature: OpenAlex, Crossref, Tavily-only router, scout (CORS-checked) |
-| 6 | #7 | Report exports (print→PDF), anchoring, sanitization, **full progress UI**, run history/resume |
-| 7 | #8 | PWA: network-first SW, hashed precache invalidation, update toast, cache rules, CSP |
-| 8 | #9 | Depth presets, config parity, docs, Pages release |
+| Stage | PR  | Scope                                                                                                                                                        |
+| ----- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | #2  | Skeleton: config, fake+openai providers, usage ledger, **rate limiter**, md ingestion, prompts, state machine, minimal pipeline e2e, report render, UI shell |
+| 2     | #3  | Full providers (anthropic/gemini/ollama/vllm), secrets vault, settings UI                                                                                    |
+| 3     | #4  | DOCX + PDF ingestion (worker), definitions pack, artifact extraction                                                                                         |
+| 4     | #5  | Claims decomposition, lenses, verify fan-out, defense–adjudication gate                                                                                      |
+| 5     | #6  | Literature: OpenAlex, Crossref, Tavily-only router, scout (CORS-checked)                                                                                     |
+| 6     | #7  | Report exports (print→PDF), anchoring, sanitization, **full progress UI**, run history/resume                                                                |
+| 7     | #8  | PWA: network-first SW, hashed precache invalidation, update toast, cache rules, CSP                                                                          |
+| 8     | #9  | Depth presets, config parity, docs, Pages release                                                                                                            |
 
 **Every stage's definition of done:** `pnpm lint && pnpm typecheck && pnpm
 test && pnpm build` all green; test suite ported for every ported module
@@ -70,7 +70,7 @@ Working dir: `~/coding/open-referee-js`, branch off `docs/exploration`
   `docs/`, `LICENSE`); add dev deps: `vitest`, `@vitest/coverage-v8`,
   `eslint`, `typescript-eslint`, `prettier`.
 - `vite.config.ts`: `base: './'` (Pages subpath-safe), `test: { environment:
-  'happy-dom' }`.
+'happy-dom' }`.
 - CI workflow: on push/PR → `pnpm i --frozen-lockfile`, lint, typecheck,
   test, build. (Pages deploy workflow comes at Stage 7.)
 
@@ -86,19 +86,29 @@ Port the subset of `ReviewConfig` needed in Stage 1 (upstream:
 `config/__init__.py`):
 
 ```ts
-export type ProviderType = 'openai_compatible' | 'anthropic' | 'gemini' | 'ollama' | 'vllm' | 'fake';
-export interface ProviderConfig { type: ProviderType; baseUrl?: string; apiKey?: string }
-export interface RoleConfig { provider: string; model: string; temperature?: number; maxTokens?: number }
+export type ProviderType =
+  'openai_compatible' | 'anthropic' | 'gemini' | 'ollama' | 'vllm' | 'fake';
+export interface ProviderConfig {
+  type: ProviderType;
+  baseUrl?: string;
+  apiKey?: string;
+}
+export interface RoleConfig {
+  provider: string;
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+}
 export interface AppSettings {
   version: 1;
   providers: Record<string, ProviderConfig>;
   roles: { strong: RoleConfig; small: RoleConfig; vision: RoleConfig };
   pricing: Record<string, { input: number; output: number }>;
-  requestTimeoutS: number;       // default 300
-  maxRetries: number;            // default 3
-  minDelayS: number;             // FEATURE ①: default 0 (rate limiting)
-  maxCostUsd: number;            // UsageLedger cap
-  searchOrder: string[];         // default ['tavily', 'tinyfish']  (Brave excluded — decision 1)
+  requestTimeoutS: number; // default 300
+  maxRetries: number; // default 3
+  minDelayS: number; // FEATURE ①: default 0 (rate limiting)
+  maxCostUsd: number; // UsageLedger cap
+  searchOrder: string[]; // default ['tavily', 'tinyfish']  (Brave excluded — decision 1)
 }
 ```
 
@@ -117,12 +127,30 @@ merge, secret-stripping, corrupt-JSON fallback to defaults.
 Port contracts from `providers/base.py` exactly:
 
 ```ts
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
-export interface Usage { promptTokens: number; completionTokens: number }
-export interface LLMResponse { content: string; usage: Usage; model: string }
-export interface ModelSpec { provider: string; model: string; temperature: number; maxTokens: number }
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+export interface Usage {
+  promptTokens: number;
+  completionTokens: number;
+}
+export interface LLMResponse {
+  content: string;
+  usage: Usage;
+  model: string;
+}
+export interface ModelSpec {
+  provider: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+}
 export class LLMError extends Error {}
-export interface ChatProvider { complete(messages: ChatMessage[], spec: ModelSpec): Promise<LLMResponse>; close(): void }
+export interface ChatProvider {
+  complete(messages: ChatMessage[], spec: ModelSpec): Promise<LLMResponse>;
+  close(): void;
+}
 ```
 
 `FakeProvider` mirrors the pytest FakeProvider scripting model: queue of
@@ -149,7 +177,7 @@ LLMError.
 
 **Commit:** `feat(providers): openai-compatible fetch adapter with retry`.
 
-### Task 5: UsageLedger (budget) 
+### Task 5: UsageLedger (budget)
 
 **Files:** `src/providers/usage.ts`, `tests/usage.test.ts`.
 
@@ -166,11 +194,15 @@ assertions of `tests/test_providers.py` budget cases.
 
 ```ts
 export class RateLimiter {
-  constructor(private minDelayS: number, private now: () => number = Date.now,
-              private sleep: (ms: number) => Promise<void> = defaultSleep) {}
-  private lastCall = new Map<string, number>();      // per provider key
+  constructor(
+    private minDelayS: number,
+    private now: () => number = Date.now,
+    private sleep: (ms: number) => Promise<void> = defaultSleep,
+  ) {}
+  private lastCall = new Map<string, number>(); // per provider key
   async gate(key: string): Promise<void> {
-    const t = this.now(); const last = this.lastCall.get(key);
+    const t = this.now();
+    const last = this.lastCall.get(key);
     if (last !== undefined) {
       const waitMs = this.minDelayS * 1000 - (t - last);
       if (waitMs > 0) await this.sleep(waitMs);
@@ -237,6 +269,7 @@ round-trip, event append/replay, list runs.
 **Files:** `src/pipeline/orchestrator.ts`, `tests/pipeline_e2e.test.ts`.
 
 Async generator `runReview(doc, settings, providers, {onEvent})`:
+
 - triage (strong) → paper profile; survey (strong); challenge: one call per
   section (strong); meta (strong); validator (strong, drops unsupported
   comments); assemble → `ReviewReport`.
@@ -245,10 +278,10 @@ Async generator `runReview(doc, settings, providers, {onEvent})`:
 - Budget: `UsageLedger.checkBudget` before every call; on `BudgetExceeded`
   → drain into **partial report** (`report.partial = true`), never discard.
 - Emits progress events — FEATURE ② groundwork: `onEvent({stage, status,
-  unitsDone?, unitsTotal?})`; the UI progress bar (Task 11) renders from
+unitsDone?, unitsTotal?})`; the UI progress bar (Task 11) renders from
   this stream.
 
-Tests: port the *tolerant-provider* pattern from the Python smoke test —
+Tests: port the _tolerant-provider_ pattern from the Python smoke test —
 FakeProvider shim pops scripted responses when present, returns benign
 defaults (`{"comments": [], "validated": [], "verdict": "major_revision"}`
 merged) when dry; assert stage sequence, event log, budget-exceeded →
@@ -267,7 +300,7 @@ partial report, validator dropping an unsubstantiated comment.
 - `app.ts`: file input → ingest → run → render report into the page.
 - `progress.ts` — FEATURE ②: binds the orchestrator's event stream to a
   progress bar: determinate where `unitsTotal` known (per-section
-  challenge), indeterminate otherwise; stage label + elapsed time. 
+  challenge), indeterminate otherwise; stage label + elapsed time.
 - All LLM/document-derived content rendered via `marked` + `dompurify`.
 
 Tests: model serialization, md snapshot, progress state transitions.
