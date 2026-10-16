@@ -24,6 +24,8 @@ equivalents. Two **design constraints** (not blockers) shape the architecture:
   `SearchRouter` must therefore ship with Brave disabled (or proxied by an
   optional user-owned Cloudflare Worker — see §7) while OpenAlex/Crossref/Tavily
   work directly from the page. >> Exclude Brave from the JS/Typescript version
+  (Update: TinyFish also verified browser-CORS-open — `access-control-allow-origin: *`
+  on preflight incl. `X-API-Key`; added to the search providers alongside Tavily.)
 - **C2 — Anthropic requires an explicit browser header.**
   `anthropic-dangerous-direct-browser-access: true`. Gemini/OpenAI-compatible
   endpoints need no special handling; Ollama needs `OLLAMA_ORIGINS=*` on the

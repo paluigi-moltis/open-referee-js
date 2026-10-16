@@ -98,7 +98,7 @@ export interface AppSettings {
   maxRetries: number;            // default 3
   minDelayS: number;             // FEATURE ①: default 0 (rate limiting)
   maxCostUsd: number;            // UsageLedger cap
-  searchOrder: string[];         // default ['tavily']  (Brave excluded — decision 1)
+  searchOrder: string[];         // default ['tavily', 'tinyfish']  (Brave excluded — decision 1)
 }
 ```
 
@@ -301,7 +301,10 @@ Tests: model serialization, md snapshot, progress state transitions.
   pool 4), verify lenses (`_lenses_for` incl. math/stats triage fields),
   artifact vision passes, whole-paper coherence, defense→adjudication gate.
 - **Stage 5 (literature):** `openalex.ts` (+raw REST fallback), `crossref.ts`
-  polite pool, SearchRouter over `['tavily']` only; scout sources live-CORS
+  polite pool, SearchRouter over `['tavily', 'tinyfish']` (TinyFish verified
+  browser-CORS-open 2026-10: `access-control-allow-origin: *` on preflight
+  incl. `X-API-Key` header; endpoint `GET api.search.tinyfish.ai/search`);
+  scout sources live-CORS
   probed at stage start, failures dropped silently-with-notice (decision 3).
 - **Stage 6 (report UX):** quote→token-overlap anchoring port, print-CSS
   "export PDF", run history/resume from IndexedDB, run export/import JSON,
