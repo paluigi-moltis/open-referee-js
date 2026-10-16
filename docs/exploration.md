@@ -198,8 +198,13 @@ open-referee-js/
    (Note: GitHub cannot fork an empty repo, so the fork would have to be a
    standalone repo or the branch pushed directly.) >> maintain the fork based convention
 
-## 9. What is *not* ported
+## 8. What is *not* ported
 
 FastAPI server, htmx/Alpine server-rendered pages, SSE transport, Docker/PyPI
 packaging, env-var config indirection, `open-referee serve` CLI. Their
 responsibilities are absorbed by the browser app (§3.6) and the PWA layer (§4).
+
+## 9. Additional features
+
+Add a setting for minimum delay in seconds between LLM API calls, usefull for rate limiting providers.
+Add a progress bar that shows the progress in the review process
