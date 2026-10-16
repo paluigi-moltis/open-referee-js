@@ -54,14 +54,9 @@ function bid(i: number): string {
 /**
  * Python `_ingest_markdown`: read a markdown file's text and build a Document
  * (browser-agnostic port takes the text, not a path — no Node fs here).
+ * Alias kept for Python-name parity: `documentFromMarkdown`.
  */
-export function readMarkdownFromText(
-  text: string,
-  sourceFormat = 'md',
-  titleHint = '',
-): Document {
-  return documentFromMarkdown(text, sourceFormat, titleHint);
-}
+export const readMarkdownFromText = documentFromMarkdown;
 
 /** Python `document_from_markdown` (md path only). */
 export function documentFromMarkdown(
@@ -191,13 +186,7 @@ export function documentFromMarkdown(
 }
 
 /** Python `_ingest_markdown` equivalent: titleHint stands in for the path stem. */
-export function readMarkdown(
-  text: string,
-  sourceFormat = 'md',
-  titleHint = '',
-): Document {
-  return documentFromMarkdown(text, sourceFormat, titleHint);
-}
+export const readMarkdown = documentFromMarkdown;
 
 // Re-exported for downstream stages that need the heuristic itself.
 export { NUMBERED_HEADING_RE };

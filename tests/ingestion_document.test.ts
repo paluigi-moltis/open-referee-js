@@ -10,11 +10,17 @@ import {
 import { sha256Hex } from '../src/ingestion/sha256';
 
 describe('sha256Hex', () => {
-  // standard test vectors; prefixes must match Python hashlib.sha256(...).hexdigest()
+  // standard test vectors; full digests must match Python hashlib.sha256(...).hexdigest()
   it('hashes ASCII and UTF-8 input', () => {
-    expect(sha256Hex('')).toMatch(/^e3b0c44298fc1c14/);
-    expect(sha256Hex('abc')).toMatch(/^ba7816bf8f01cfea/);
-    expect(sha256Hex('na\u00efve-caf\u00e9')).toMatch(/^7aa270c7a0520b1e/);
+    expect(sha256Hex('')).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+    expect(sha256Hex('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    expect(sha256Hex('na\u00efve-caf\u00e9')).toBe(
+      '7aa270c7a0520b1e633907482ab7048f0e5f0fac1ffc71e63cef30ffb9f4cfa9',
+    );
   });
 });
 

@@ -48,7 +48,7 @@ export class Block {
     this.type = rest.type ?? BlockType.PARAGRAPH;
     this.sectionPath = rest.sectionPath ?? [];
     this.order = rest.order ?? 0;
-    this.contentHash = contentHash ?? contentHashOf(text);
+    this.contentHash = contentHash || contentHashOf(text);
     this.page = rest.page;
   }
 }
