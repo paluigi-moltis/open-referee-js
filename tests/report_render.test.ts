@@ -69,7 +69,7 @@ describe('reportToMarkdown', () => {
     const lines = md.split('\n');
     expect(lines[0]).toBe('# Review report — Test Paper');
     expect(md).toContain('_Generated 2026-10-16 14:00 UTC_');
-    expect(md).toContain('## Overall review');
+    expect(md).toContain('## Overall feedback');
     expect(md).toContain('The proof of Lemma 2 is incomplete.');
     expect(md).toContain('## Detailed comments (2)');
     // highest severity first, severity formatted to 2 decimals

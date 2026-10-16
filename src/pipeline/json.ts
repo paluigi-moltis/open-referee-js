@@ -9,11 +9,6 @@
 
 import { LLMError } from '../providers/base';
 
-/** True when ch is not whitespace and not a JSON structural character. */
-function isProse(ch: string): boolean {
-  return !/\s/.test(ch) && ch !== '{' && ch !== '[' && ch !== '}' && ch !== ']';
-}
-
 /**
  * Scan s starting at `start` for a balanced {...} or [...] value, honoring
  * string literals (escapes included). Returns the parsed value, or undefined
@@ -83,15 +78,6 @@ export function extractJson(text: string): unknown {
     if (ch !== '{' && ch !== '[') continue;
     const candidate = scanBalanced(text, i);
     if (candidate !== undefined) return candidate;
-    // A failed parse at this position: skip past it only if it is inside
-    // prose (i.e. we are not on a structural opener that simply truncated).
-    if (
-      isProse(text.slice(Math.max(0, i - 1), i + 2)[0] ?? ch) === false &&
-      ch === '{'
-    ) {
-      // potential real JSON that failed to parse; do not keep scanning
-      // deep into it — but a later opener may still be valid, so continue.
-    }
   }
 
   // 3. whole-string parse.

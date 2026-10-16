@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { runReview } from '../src/pipeline/orchestrator';
 import type { StageProgress } from '../src/pipeline/orchestrator';
 import type { RunState, StageEvent } from '../src/pipeline/state';
+import { listRuns } from '../src/runs/store';
 import type { Document } from '../src/ingestion/document';
 import { readMarkdown } from '../src/ingestion/readers_md';
 import { DEFAULT_SETTINGS, type AppSettings } from '../src/config/schema';
@@ -329,5 +330,44 @@ describe('runReview malformed JSON', () => {
     expect(report.comments).toHaveLength(1);
     expect(state.stages['challenge']).toBe('failed');
     expect(state.stages['assemble']).toBe('done');
+  });
+});
+
+describe('runReview crash recovery', () => {
+  it('an unexpected error fails the running stage, persists, and rethrows', async () => {
+    const strong = new ScriptedProvider();
+    // Provider throws a plain TypeError (not LLMError) on the first call.
+    strong.queue(new TypeError('socket hang up'));
+    const events: StageEvent[] = [];
+    const gen = runReview({
+      doc: makeDoc(),
+      settings: makeSettings(),
+      providers: { strong, small: new ScriptedProvider() },
+      onEvent: (e) => events.push(e),
+    });
+    // The generator must reject (error propagates to the consumer)…
+    await expect(drain(gen)).rejects.toThrow(TypeError);
+    // …but the run must be persisted in a terminal state, never 'running'.
+    // (dbPromise is module-cached, so earlier tests in this file share the
+    // same IDB instance — target the crashed run directly.)
+    const runs = await listRuns();
+    const saved = runs.find((r) => r.stages['triage'] === 'failed');
+    expect(saved).toBeDefined();
+    expect(saved!.partial).toBe(true);
+    for (const stage of [
+      'survey',
+      'challenge',
+      'meta',
+      'validate',
+      'assemble',
+    ] as const) {
+      // Missing stages are implicitly pending (Partial record).
+      expect(saved!.stages[stage] ?? 'pending').toBe('pending');
+    }
+    // The failure event reached the UI stream too.
+    const last = events.at(-1);
+    expect(last?.stage).toBe('triage');
+    expect(last?.status).toBe('failed');
+    expect(last?.detail).toContain('socket hang up');
   });
 });

@@ -27,12 +27,17 @@ const DB_VERSION = 1;
 let dbPromise: Promise<IDBPDatabase<OpenRefereeDB>> | undefined;
 
 function db(): Promise<IDBPDatabase<OpenRefereeDB>> {
+  // A rejected openDB promise must not be cached: reset so the next call
+  // retries instead of failing forever.
   dbPromise ??= openDB<OpenRefereeDB>(DB_NAME, DB_VERSION, {
     upgrade(d) {
       d.createObjectStore('runs', { keyPath: 'runId' });
       const events = d.createObjectStore('events', { autoIncrement: true });
       events.createIndex('byRunId', 'runId');
     },
+  }).catch((err: unknown) => {
+    dbPromise = undefined;
+    throw err;
   });
   return dbPromise;
 }

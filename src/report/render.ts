@@ -29,7 +29,7 @@ export function reportToMarkdown(report: ReviewReport): string {
   if (report.partial) {
     parts.push('_PARTIAL REPORT: the run stopped early; sections may be missing._');
   }
-  parts.push('', '## Overall review', '', report.overall || '_(none)_', '');
+  parts.push('', '## Overall feedback', '', report.overall || '_(none)_', '');
 
   parts.push(`## Detailed comments (${report.comments.length})`, '');
   for (const [i, c] of sortedComments(report).entries()) {
