@@ -23,13 +23,13 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function retryAfterMs(res: Response): number | null {
+function retryAfterMs(res: Response, now: () => number = Date.now): number | null {
   const v = res.headers.get('Retry-After');
-  if (v === null) return null;
+  if (v === null || v.trim() === '') return null;
   const s = Number(v);
   if (Number.isFinite(s) && s >= 0) return s * 1000;
   const date = new Date(v);
-  if (!Number.isNaN(date.getTime())) return Math.max(0, date.getTime() - Date.now());
+  if (!Number.isNaN(date.getTime())) return Math.max(0, date.getTime() - now());
   return null;
 }
 
@@ -53,7 +53,7 @@ export class OpenAICompatibleProvider {
     this.apiKey = apiKey;
     this.rateLimiter = rateLimiter;
     this.fetchImpl = fetchImpl ?? ((...args) => fetch(...args));
-    this.maxRetries = maxRetries;
+    this.maxRetries = Math.max(0, Math.floor(maxRetries));
     this.sleep = sleep ?? defaultSleep;
   }
 
@@ -93,6 +93,7 @@ export class OpenAICompatibleProvider {
       if (res.status === 429 || res.status >= 500) {
         lastError = new LLMError(
           `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
+          res.status,
         );
         if (attempt < this.maxRetries) {
           const raMs = retryAfterMs(res);
@@ -103,7 +104,10 @@ export class OpenAICompatibleProvider {
       }
 
       if (!res.ok) {
-        throw new LLMError(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        throw new LLMError(
+          `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
+          res.status,
+        );
       }
 
       let parsed: ChatCompletionsResponse;

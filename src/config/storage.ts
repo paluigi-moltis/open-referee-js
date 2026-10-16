@@ -11,8 +11,17 @@ function mergeProviderConfig(
 ): Record<string, AppSettings['providers'][string]> {
   if (!isRecord(raw)) return {};
   const out: Record<string, AppSettings['providers'][string]> = {};
+  const validTypes: readonly string[] = [
+    'openai_compatible',
+    'anthropic',
+    'gemini',
+    'ollama',
+    'vllm',
+    'fake',
+  ];
   for (const [name, cfg] of Object.entries(raw)) {
     if (!isRecord(cfg) || typeof cfg['type'] !== 'string') continue;
+    if (!validTypes.includes(cfg['type'])) continue;
     out[name] = {
       type: cfg['type'] as AppSettings['providers'][string]['type'],
       ...(typeof cfg['baseUrl'] === 'string' ? { baseUrl: cfg['baseUrl'] } : {}),

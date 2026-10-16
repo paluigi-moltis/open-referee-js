@@ -54,8 +54,14 @@ export class UsageLedger {
   }
 
   record(model: string, role: string, resp: LLMResponse): CallRecord {
-    const costUsd = this.estimateCost(model, resp.usage);
-    const rec: CallRecord = { model, role, usage: { ...resp.usage }, costUsd };
+    // Clamp negative token counts from broken providers so a bad response
+    // can never reduce the running cost.
+    const usage: Usage = {
+      promptTokens: Math.max(0, resp.usage.promptTokens),
+      completionTokens: Math.max(0, resp.usage.completionTokens),
+    };
+    const costUsd = this.estimateCost(model, usage);
+    const rec: CallRecord = { model, role, usage, costUsd };
     this.calls.push(rec);
     return rec;
   }

@@ -73,6 +73,23 @@ describe('UsageLedger.budget', () => {
     expect(() => ledger.checkBudget(2.5)).not.toThrow(); // 4.5 <= 5
     expect(() => ledger.checkBudget(3.5)).toThrow(BudgetExceeded); // 5.5 > 5
   });
+
+  it('capUsd=0 allows free calls but blocks any projected spend', () => {
+    const ledger = new UsageLedger(0, PRICING);
+    expect(() => ledger.checkBudget(0)).not.toThrow(); // empty ledger, zero projection
+    expect(() => ledger.checkBudget(0.01)).toThrow(BudgetExceeded);
+    // Free (unknown-model) calls never trip the cap.
+    ledger.record('unknown-model', 'small', resp(1000, 1000));
+    expect(ledger.totalCost()).toBe(0);
+    expect(() => ledger.checkBudget(0)).not.toThrow();
+  });
+
+  it('negative usage from a broken provider is clamped, never credited', () => {
+    const ledger = new UsageLedger(5, PRICING);
+    ledger.record('gpt-strong', 'strong', resp(1_000_000, 0)); // $2
+    ledger.record('gpt-strong', 'strong', resp(-5_000_000, -1_000_000)); // would be -$12
+    expect(ledger.totalCost()).toBeCloseTo(2, 10); // clamped to 0, not reduced
+  });
 });
 
 describe('UsageLedger.record and aggregation', () => {

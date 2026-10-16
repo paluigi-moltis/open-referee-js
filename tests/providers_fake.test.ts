@@ -28,11 +28,20 @@ describe('FakeProvider', () => {
     });
   });
 
-  it('accepts contents variadically via queue(...contents)', () => {
+  it('accepts contents variadically via queue(...contents)', async () => {
     const p = new FakeProvider();
     p.queue('a');
     p.queue('b', 'c');
-    expect(p.calls.length).toBe(0);
+    await expect(p.complete([msg('user', 'q1')], spec())).resolves.toMatchObject({
+      content: 'a',
+    });
+    await expect(p.complete([msg('user', 'q2')], spec())).resolves.toMatchObject({
+      content: 'b',
+    });
+    await expect(p.complete([msg('user', 'q3')], spec())).resolves.toMatchObject({
+      content: 'c',
+    });
+    await expect(p.complete([msg('user', 'q4')], spec())).rejects.toThrow(LLMError);
   });
 
   it('throws LLMError when the queue is dry', async () => {

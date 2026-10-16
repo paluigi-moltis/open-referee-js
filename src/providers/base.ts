@@ -23,9 +23,13 @@ export interface ModelSpec {
 }
 
 export class LLMError extends Error {
-  constructor(message: string) {
+  /** HTTP status when the error came from a response, for programmatic branching. */
+  readonly status?: number;
+
+  constructor(message: string, status?: number) {
     super(message);
     this.name = 'LLMError';
+    this.status = status;
   }
 }
 

@@ -218,6 +218,38 @@ describe('OpenAICompatibleProvider', () => {
     expect(calls.length).toBe(1);
   });
 
+  it('exposes the HTTP status on LLMError', async () => {
+    const { impl } = mockFetch(() => jsonResponse('{"error": "nope"}', 401));
+    const p = new OpenAICompatibleProvider({
+      baseUrl: BASE,
+      apiKey: 'k',
+      fetchImpl: impl,
+    });
+    const err = await p.complete([{ role: 'user', content: 'q' }], spec()).then(
+      () => {
+        throw new Error('expected LLMError');
+      },
+      (e: LLMError) => e,
+    );
+    expect(err).toBeInstanceOf(LLMError);
+    expect(err.status).toBe(401);
+  });
+
+  it('negative maxRetries is clamped to zero retries (single attempt)', async () => {
+    const { impl, calls } = mockFetch(() => jsonResponse('boom', 500));
+    const p = new OpenAICompatibleProvider({
+      baseUrl: BASE,
+      apiKey: 'k',
+      fetchImpl: impl,
+      maxRetries: -3,
+      sleep: async () => undefined,
+    });
+    await expect(p.complete([{ role: 'user', content: 'q' }], spec())).rejects.toThrow(
+      LLMError,
+    );
+    expect(calls.length).toBe(1); // attempted once, no fetch skipped
+  });
+
   it('truncates error bodies to 200 chars', async () => {
     const longBody = 'x'.repeat(500);
     const { impl } = mockFetch(() => jsonResponse(longBody, 400));
