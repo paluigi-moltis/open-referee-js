@@ -13,7 +13,8 @@ function routerStub(behavior: (query: string) => SearchHit[]): {
 } {
   const queries: string[] = [];
   const router = {
-    search: async (query: string, _limit?: number) => {
+    // The scout calls searchStrict; clean [] results resolve, throws surface.
+    searchStrict: async (query: string, _limit?: number) => {
       queries.push(query);
       return behavior(query);
     },

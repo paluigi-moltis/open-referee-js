@@ -93,6 +93,30 @@ export class SearchRouter {
     return [];
   }
 
+  /**
+   * Like `search`, but rethrows the first TRANSPORT failure (fetch rejecting
+   * with TypeError = CORS/network block) after the remaining engines had
+   * their chance. An empty-but-clean result set still returns `[]` — only a
+   * genuine transport fault surfaces. The scout uses this so a browser-
+   * blocked engine can trigger its per-site drop contract.
+   */
+  async searchStrict(query: string, limit = 8): Promise<SearchHit[]> {
+    let transportError: TypeError | undefined;
+    for (const engine of this.enabledEngines()) {
+      try {
+        const hits = await this.searchEngine(engine, query, limit);
+        if (hits.length > 0) return hits;
+      } catch (err) {
+        if (err instanceof TypeError) transportError = transportError ?? err;
+        console.warn(
+          `search engine ${engine} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (transportError) throw transportError;
+    return [];
+  }
+
   /** Query every enabled engine (used for the review-community scout). */
   async searchAll(query: string, limit = 5): Promise<SearchHit[]> {
     const out: SearchHit[] = [];

@@ -77,10 +77,13 @@ export class PeerReviewScout {
       if (this.dropped.has(site)) continue;
       let hits;
       try {
-        hits = await this.router.search(`site:${site} "${clip(title)}"`, limit);
+        // searchStrict rethrows transport faults (TypeError = CORS/network)
+        // after the other engines tried; a clean [] (no community posts)
+        // does NOT drop the site.
+        hits = await this.router.searchStrict(`site:${site} "${clip(title)}"`, limit);
       } catch (err) {
-        // SearchRouter.search is itself fail-soft; a throw here means an
-        // unexpected transport fault — treat it like a CORS drop.
+        // Transport fault on every enabled engine — treat as a CORS block
+        // and drop the site for the rest of the run (one warn).
         console.warn(
           `scout: search engine unreachable for ${site} (${err instanceof Error ? err.message : String(err)}); dropping for this run`,
         );

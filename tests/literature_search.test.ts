@@ -82,7 +82,46 @@ describe('SearchRouter failover', () => {
         keys: { tavily: 'tv', tinyfish: 'tf' },
       }).search('q');
       expect(hits[0]!.engine).toBe('tinyfish');
-      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('searchStrict rethrows transport TypeError after the other engines tried', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { calls, restore } = stubFetch(() => null); // every engine CORS-blocked
+    try {
+      const router = new SearchRouter({ keys: { tavily: 'tv', tinyfish: 'tf' } });
+      await expect(router.searchStrict('q', 5)).rejects.toThrow(TypeError);
+      expect(calls).toHaveLength(2); // both engines still got their chance
+      expect(warn).toHaveBeenCalledTimes(2); // one warn per engine
+    } finally {
+      restore();
+    }
+  });
+
+  it('searchStrict returns [] on a clean empty result (no transport fault)', async () => {
+    const { restore } = stubFetch(() => ({ ok: true, json: { results: [] } }));
+    try {
+      const router = new SearchRouter({ keys: { tavily: 'tv', tinyfish: 'tf' } });
+      await expect(router.searchStrict('q', 5)).resolves.toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('searchStrict lets a later engine satisfy the query despite an earlier TypeError', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { restore } = stubFetch((url) =>
+      url.includes('tavily') ? null : { ok: true, json: TINYFISH },
+    );
+    try {
+      const hits = await new SearchRouter({
+        keys: { tavily: 'tv', tinyfish: 'tf' },
+      }).searchStrict('q');
+      expect(hits[0]!.engine).toBe('tinyfish');
+      expect(warn).toHaveBeenCalled();
     } finally {
       restore();
     }

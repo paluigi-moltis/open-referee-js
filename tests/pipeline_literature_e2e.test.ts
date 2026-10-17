@@ -290,6 +290,43 @@ describe('literature stage wiring (runReview survey + scout)', () => {
     }
   });
 
+  it('search_queries are capped at 8 (Python run() [:8]) — no unbounded round-trips', async () => {
+    const triage = {
+      ...TRIAGE,
+      search_queries: Array.from({ length: 40 }, (_, i) => `query ${i}`),
+    };
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j(triage),
+      j({ claims: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ overall_feedback: 'ok' }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+    );
+    const fetchStub = stubFetch((url) =>
+      url.includes('api.openalex.org')
+        ? { ok: true, json: { results: [openAlexWork('W', 'ID')] } }
+        : { ok: true, json: { results: [] } },
+    );
+    try {
+      await drain(
+        runReview({
+          doc: makeDoc(),
+          settings: makeSettings(),
+          providers: { strong, small },
+        }),
+      );
+      const oaCalls = fetchStub.calls.filter((u) => u.includes('api.openalex.org'));
+      expect(oaCalls).toHaveLength(8);
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
   it('scout stage is skipped when the survey stage never produced a pack', async () => {
     const strong = new ScriptedProvider();
     // triage garbage -> survey can't run meaningfully but still runs; instead

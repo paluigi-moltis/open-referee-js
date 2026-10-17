@@ -36,6 +36,12 @@ Stage 1 skeleton of the static client-side TS port of
   `mergeSettings` round-trips the block and persistence strips it.
 - Old persisted runs without the scout stage keep loading (`stages` is
   Partial; scout reads back as pending).
+- Deferred (documented): Python's user-supplied literature path
+  (`pack.user_docs` from author PDFs + `source='user_pdf'` OpenAlex
+  matching) — the browser app has no multi-document ingest yet; the
+  `renderPack` user-docs line stays for parity but is empty (Stage 6+).
+  Scout `search_queries` capped at 8 and triage `search_queries` consumed
+  up to 8 per Python `run()`.
 
 ### Stage 4 — verification engine (claims, lenses, defense gate)
 

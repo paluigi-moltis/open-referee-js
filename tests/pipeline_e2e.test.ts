@@ -114,6 +114,9 @@ async function drain(gen: AsyncGenerator<StageEvent, RunState, undefined>) {
 beforeEach(() => {
   // IndexedDB store writes happen inside the orchestrator (saveRun/appendEvent).
   const g = globalThis as unknown as Record<string, unknown>;
+  // No network in pipeline e2e: the survey stage now issues real fetches the
+  // moment a triage fixture carries search_queries — pin that down.
+  g.fetch = () => Promise.reject(new TypeError('no network in pipeline e2e'));
   g.indexedDB = new IDBFactory();
   g.IDBRequest = IDBRequest;
   g.IDBDatabase = IDBDatabase;

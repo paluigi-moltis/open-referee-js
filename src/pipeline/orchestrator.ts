@@ -2,9 +2,16 @@
  * The review pipeline orchestrator (Stage 4 verification engine).
  *
  * Port of Python `open_referee/pipeline/orchestrator.py`, narrowed to:
- * triage -> claims -> survey -> verify (per-claim workers + lenses +
- * whole-paper) -> challenge (per section, Python `_challenge` semantics,
- * ending in the defense-adjudication gate) -> meta -> validate -> assemble.
+ * triage -> claims -> survey (literature pack: OpenAlex + web router +
+ * surveyor + Crossref missing-refs) -> scout (community discussion) ->
+ * verify (per-claim workers + lenses + whole-paper) -> challenge (per
+ * section, Python `_challenge` semantics, ending in the defense gate) ->
+ * meta -> validate -> assemble.
+ *
+ * Deferred: Python's user-supplied literature path (pack.user_docs from
+ * author PDFs + OpenAlex metadata matching, source='user_pdf') — the
+ * browser app has no multi-document ingest yet; renderPack keeps the
+ * user-docs line for parity but it is empty in production (Stage 6+).
  *
  * Implemented as an async generator: every StageEvent is yielded AND passed
  * to `onEvent`; the generator's return value is the final RunState with the
@@ -432,7 +439,9 @@ export async function* runReview(
       try {
         const oa = new OpenAlexClient();
         const items: LiteratureItem[] = [];
-        for (const q of queries) {
+        // Python run() slices search_queries to 8 (LLM-controlled list —
+        // unbounded would mean unbounded sequential round-trips).
+        for (const q of queries.slice(0, 8)) {
           items.push(...(await oa.searchWorks(q, 5)));
           if (items.length >= 30) break;
         }
