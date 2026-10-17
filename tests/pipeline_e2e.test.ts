@@ -389,10 +389,8 @@ describe('runReview validator filtering', () => {
       }),
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
-      j({ overall_feedback: 'report' }),
-      // validator keeps all three
-      j({ validated: [0, 1, 2], rejected: [] }),
-      // defense gate: strong adjudicates
+      // defense gate runs at the challenge tail (Python parity), before
+      // meta/validate: strong adjudicates the three candidates
       j({ verdict: 'dismissed', reason: 'correct' }),
       j({
         verdict: 'adjusted',
@@ -400,6 +398,9 @@ describe('runReview validator filtering', () => {
         comment: { message: 'adjusted message', score: 0.4 },
       }),
       j({ verdict: 'upheld' }),
+      j({ overall_feedback: 'report' }),
+      // validator sees the POST-gate list (2 comments) and keeps both
+      j({ validated: [0, 1], rejected: [] }),
     );
     const small = new ScriptedProvider();
     // small defends each comment before the strong adjudicator rules
@@ -437,7 +438,7 @@ describe('runReview malformed JSON', () => {
   it('fails the stage, sets partial, and still completes the run', async () => {
     const strong = new ScriptedProvider();
     strong.queue(
-      'this is not json at all', // triage: garbage (no repair on triage) -> failed
+      'this is not json at all', // triage: garbage — TS triage/meta/validate use plain callJson (no repair retry); Python repairs there too but TS hasn't since Stage 1 -> failed
       'no json {{{ here', // inventory: garbage
       'again {{{ nope', // inventory repair retry: garbage -> claims failed
       'survey {{{ nope', // survey: garbage -> survey failed

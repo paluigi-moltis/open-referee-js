@@ -30,8 +30,9 @@ Stage 1 skeleton of the static client-side TS port of
 - Artifact **vision** passes are stubbed (return no comments) until
   `ChatMessage` gains image support (Stage 5+); `findMentions`/
   `nearPageBlocks` are ported and tested ahead of that.
-- Deviations from Python documented in code: defense gate runs after
-  validate (not inside challenge); artifact vision deferred.
+- Deviations from Python documented in code: artifact vision deferred. The
+  defense gate runs at the challenge tail, matching Python's placement at
+  the end of `_challenge` (its output feeds meta/validate).
 
 ## Stage 3 — heavy ingestion (PDF, DOCX, artifacts)
 

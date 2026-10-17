@@ -113,13 +113,23 @@ export async function runClaimInventory(init: {
   if (res.kind !== 'ok') return { claims: [] };
   const claimsRaw = (res.value as { claims?: unknown } | null)?.['claims'];
   if (!Array.isArray(claimsRaw)) return { claims: [] };
-  // basic sanitation
+  // basic sanitation (Python: enumerate index drives default ids, so
+  // dropped claims still consume a number; `{}` components is falsy there)
   const out: Record<string, unknown>[] = [];
-  for (const c of claimsRaw) {
+  for (let i = 0; i < claimsRaw.length; i++) {
+    const c = claimsRaw[i];
     if (typeof c !== 'object' || c === null) continue;
     const o = c as Record<string, unknown>;
-    if (!o['components'] || typeof o['components'] !== 'object') continue;
-    if (o['id'] === undefined) o['id'] = `cl${String(out.length + 1).padStart(3, '0')}`;
+    const comps = o['components'];
+    if (
+      comps === undefined ||
+      comps === null ||
+      typeof comps !== 'object' ||
+      Object.keys(comps as object).length === 0
+    ) {
+      continue;
+    }
+    if (o['id'] === undefined) o['id'] = `cl${String(i + 1).padStart(3, '0')}`;
     if (o['type'] === undefined) o['type'] = 'logical';
     if (o['importance'] === undefined) o['importance'] = 'supporting';
     out.push(o);

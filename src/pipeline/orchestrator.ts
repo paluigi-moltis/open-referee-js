@@ -3,8 +3,8 @@
  *
  * Port of Python `open_referee/pipeline/orchestrator.py`, narrowed to:
  * triage -> claims -> survey -> verify (per-claim workers + lenses +
- * whole-paper) -> challenge (per section, Python `_challenge` semantics)
- * -> meta -> validate -> defense gate -> assemble.
+ * whole-paper) -> challenge (per section, Python `_challenge` semantics,
+ * ending in the defense-adjudication gate) -> meta -> validate -> assemble.
  *
  * Implemented as an async generator: every StageEvent is yielded AND passed
  * to `onEvent`; the generator's return value is the final RunState with the
@@ -538,7 +538,8 @@ export async function* runReview(
             sec.title,
             '',
             sec.text.slice(0, MAX_SECTION_CHARS),
-            JSON.stringify(cands),
+            // Python: json.dumps(cands, indent=1)[:20_000]
+            JSON.stringify(cands, null, 1).slice(0, 20_000),
           ),
         );
         unitsDone += 1;
@@ -621,7 +622,8 @@ export async function* runReview(
           wholePaperChallengerPrompt(
             doc.title,
             manuscript,
-            JSON.stringify(wpCandidates),
+            // Python: json.dumps(wp_candidates, indent=1)[:30_000]
+            JSON.stringify(wpCandidates, null, 1).slice(0, 30_000),
           ),
         );
         if (wpRes.kind === 'ok') {
@@ -689,12 +691,29 @@ export async function* runReview(
           unitsTotal: sections.length,
         });
       }
+
+      // ------------------------------------------ challenge tail: defense --
+      // Python parity: defense_round runs at the end of _challenge, so its
+      // output (not the raw candidates) feeds meta and validate.
+      if (!budgetError && preset.defenseRound && challengeValidated.length > 0) {
+        yield* emit('challenge', 'running', 'defense gate');
+        const gate = await defenseRound({
+          callJson,
+          doc,
+          candidates: challengeValidated,
+          settings,
+        });
+        challengeValidated.length = 0;
+        challengeValidated.push(...gate.kept);
+        if (gate.budget) budgetError = gate.budget;
+      }
     }
 
     // -------------------------------------------------------------- 5. meta --
     if (!budgetError) {
       yield* emit('meta', 'running');
-      const commentsJson = JSON.stringify(challengeValidated);
+      // Python: json.dumps(validated, indent=1)[:60_000]
+      const commentsJson = JSON.stringify(challengeValidated, null, 1).slice(0, 60_000);
       const metaRes = await callJson(
         'strong',
         metaSystem,
@@ -740,7 +759,8 @@ export async function* runReview(
     const validated: ReviewComment[] = [];
     if (!budgetError && challengeValidated.length > 0) {
       yield* emit('validate', 'running');
-      const commentsJson = JSON.stringify(challengeValidated);
+      // Python: json.dumps(validated, indent=1)[:60_000]
+      const commentsJson = JSON.stringify(challengeValidated, null, 1).slice(0, 60_000);
       const valRes = await callJson(
         'strong',
         validatorSystem,
@@ -776,21 +796,6 @@ export async function* runReview(
       }
     } else if (!budgetError) {
       yield* emit('validate', 'skipped', 'no candidates to validate');
-    }
-
-    // ------------------------------------------------- 6b. defense gate --
-    // Python runs defense_round on the validated list inside _challenge;
-    // TS: after validate emits done, still inside the challenge/validate tail.
-    let finalComments = validated;
-    if (!budgetError && preset.defenseRound && validated.length > 0) {
-      const gate = await defenseRound({
-        callJson,
-        doc,
-        candidates: validated,
-        settings,
-      });
-      finalComments = gate.kept;
-      if (gate.budget) budgetError = gate.budget;
     }
 
     // ---------------------------------------------------------- 7. assemble --
@@ -836,7 +841,7 @@ export async function* runReview(
       paperTitle: doc.title,
       recommendation,
       overall: artifacts.overall || '_(no meta-review produced)_',
-      comments: finalComments,
+      comments: validated,
       usage,
       partial: state.partial || budgetError !== undefined,
       generatedAt: new Date().toISOString(),
