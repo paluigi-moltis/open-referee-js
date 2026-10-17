@@ -341,11 +341,11 @@ export async function* runReview(
     async function* settle(
       stage: Stage,
       result: CallResult,
-      onOk: (value: unknown) => void,
+      onOk: (value: unknown) => void | Promise<void>,
       progress?: StageProgress,
     ): AsyncGenerator<StageEvent, boolean, undefined> {
       if (result.kind === 'ok') {
-        onOk(result.value);
+        await onOk(result.value);
         yield* emit(stage, 'done', undefined, progress);
         return true;
       }
@@ -462,7 +462,7 @@ export async function* runReview(
       // LLM error from the surveyor itself, mirroring Python `_stage_or_resume`
       // re-raising LLMError; network degradation below never fails the run.
       const surveyRes = await callJson('small', surveySystem, renderPack(pack, 30));
-      const keep = yield* settle('survey', surveyRes, (v) => {
+      const keep = yield* settle('survey', surveyRes, async (v) => {
         const survey = (v ?? {}) as Record<string, unknown>;
         // 1-based index mapping onto the deduped pack items.
         const selected = Array.isArray(survey['selected']) ? survey['selected'] : [];
@@ -481,39 +481,35 @@ export async function* runReview(
           }
         }
         // Missing refs -> Crossref lookup, appended with why_important.
+        // Python awaits these inside the same client context block; lookups
+        // are bounded (5) and fail-soft, so inline await is parity-safe.
         const missing = Array.isArray(survey['missing_references'])
           ? survey['missing_references']
           : [];
-        void (async () => {
-          try {
-            const cr = new CrossrefClient();
-            for (const m of missing.slice(0, 5)) {
-              if (typeof m !== 'object' || m === null) continue;
-              const mo = m as Record<string, unknown>;
-              const title = mo['title'];
-              if (typeof title !== 'string' || title === '') continue;
-              const extra = await cr.lookup(title);
-              if (extra) {
-                const why = mo['why_important'];
-                extra.whyRelevant = typeof why === 'string' ? why : null;
-                pack.items.push(extra);
-              }
+        try {
+          const cr = new CrossrefClient();
+          for (const m of missing.slice(0, 5)) {
+            if (typeof m !== 'object' || m === null) continue;
+            const mo = m as Record<string, unknown>;
+            const title = mo['title'];
+            if (typeof title !== 'string' || title === '') continue;
+            const extra = await cr.lookup(title);
+            if (extra) {
+              const why = mo['why_important'];
+              extra.whyRelevant = typeof why === 'string' ? why : null;
+              pack.items.push(extra);
             }
-            // state_of_the_art_notes appends to field_hint (Python [:400]).
-            const notes = survey['state_of_the_art_notes'];
-            if (typeof notes === 'string') {
-              pack.fieldHint = ((pack.fieldHint ?? '') + ` — ${notes}`).slice(0, 400);
-            }
-            // Persist only after async enrichment lands.
-            artifacts.survey = pack;
-          } catch (err) {
-            console.warn(
-              `surveyor enrichment degraded: ${err instanceof Error ? err.message : String(err)}`,
-            );
           }
-        })();
-        // Pack is available to later stages immediately; enrichment updates
-        // the same object reference, so artifacts.survey below stays valid.
+        } catch (err) {
+          console.warn(
+            `missing-reference enrichment degraded: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        // state_of_the_art_notes appends to field_hint (Python [:400]).
+        const notes = survey['state_of_the_art_notes'];
+        if (typeof notes === 'string') {
+          pack.fieldHint = ((pack.fieldHint ?? '') + ` — ${notes}`).slice(0, 400);
+        }
         artifacts.survey = pack;
       });
       if (!keep && surveyRes.kind === 'budget') budgetError = surveyRes.error;
