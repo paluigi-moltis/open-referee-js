@@ -21,6 +21,7 @@ import type { CallResult, StageProgress } from './orchestrator';
 import * as promptsClaims from './prompts_claims';
 import { mapPool, type PoolResult } from './pool';
 import type { Stage, StageEvent } from './state';
+import { BudgetExceeded } from '../providers/usage';
 
 export const MAX_MANUSCRIPT_CHARS = 120_000;
 
@@ -87,14 +88,15 @@ export interface EmitFn {
 /**
  * CLAIMS stage: exhaustive atomic claim catalogue for the manuscript.
  * Sanitation: claims without `components` are dropped; id/type/importance
- * get Python-parity defaults.
+ * get Python-parity defaults. A tripped budget cap is surfaced to the
+ * caller (Python lets it propagate to the drain handler).
  */
 export async function runClaimInventory(init: {
   callJson: CallJson;
   doc: Document;
   triage: Record<string, unknown>;
   settings: AppSettings;
-}): Promise<Record<string, unknown>[]> {
+}): Promise<{ claims: Record<string, unknown>[]; budget?: BudgetExceeded }> {
   const { callJson, doc, triage } = init;
   const user = promptsClaims.claimInventoryPrompt(
     doc.title,
@@ -107,9 +109,10 @@ export async function runClaimInventory(init: {
     promptsClaims.CLAIM_INVENTORY_SYSTEM,
     user,
   );
-  if (res.kind !== 'ok') return [];
+  if (res.kind === 'budget') return { claims: [], budget: res.error };
+  if (res.kind !== 'ok') return { claims: [] };
   const claimsRaw = (res.value as { claims?: unknown } | null)?.['claims'];
-  if (!Array.isArray(claimsRaw)) return [];
+  if (!Array.isArray(claimsRaw)) return { claims: [] };
   // basic sanitation
   const out: Record<string, unknown>[] = [];
   for (const c of claimsRaw) {
@@ -121,13 +124,15 @@ export async function runClaimInventory(init: {
     if (o['importance'] === undefined) o['importance'] = 'supporting';
     out.push(o);
   }
-  return out;
+  return { claims: out };
 }
 
 /**
  * Per-claim verification workers, parallel under the depth-preset cap.
  * Central claims first, then supporting; peripheral only if budget remains.
- * Returns the comments and reports drain progress per claim.
+ * Returns the comments plus a tripped budget error, if any (Python's gather
+ * lets every queued task hit the cap individually; completed claims keep
+ * their comments — the drain mirrors that).
  */
 export async function verifyClaims(init: {
   callJson: CallJson;
@@ -135,8 +140,10 @@ export async function verifyClaims(init: {
   claims: Record<string, unknown>[];
   settings: AppSettings;
   onEvent?: ClaimProgress;
-}): Promise<ReviewComment[]> {
-  const { callJson, doc, claims, settings, onEvent } = init;
+  /** A worker failing (LLMError/invalid JSON even after repair) marks the verify stage partial. */
+  onWorkerError?: () => void;
+}): Promise<{ comments: ReviewComment[]; budget?: BudgetExceeded }> {
+  const { callJson, doc, claims, settings, onEvent, onWorkerError } = init;
   const preset = depthPreset(settings.review);
   const order: Record<string, number> = { central: 0, supporting: 1, peripheral: 2 };
   const ordered = [...claims].sort(
@@ -164,6 +171,7 @@ export async function verifyClaims(init: {
       definitions: defs.slice(0, 6000),
     });
     const res = await callJsonWithRepair(callJson, role, system, user);
+    if (res.kind !== 'ok' && res.kind !== 'budget') onWorkerError?.();
     let comments: ReviewComment[] = [];
     if (res.kind === 'ok') {
       const raw = (res.value as { comments?: unknown } | null)?.['comments'];
@@ -175,14 +183,18 @@ export async function verifyClaims(init: {
     }
     // progress: per-claim unitsDone/unitsTotal is reported by the caller
     // (it owns the counter across the pool).
-    return comments;
+    return { comments, budget: res.kind === 'budget' ? res.error : undefined };
   });
 
   const out: ReviewComment[] = [];
+  let budget: BudgetExceeded | undefined;
   for (const r of results) {
-    if (r.ok) out.push(...r.value);
+    if (r.ok) {
+      out.push(...r.value.comments);
+      budget = budget ?? r.value.budget;
+    }
   }
-  return out;
+  return { comments: out, budget };
 }
 
 /** Pull a comment object out of a worker response, adding Python-parity
@@ -310,10 +322,10 @@ export async function defenseRound(init: {
   candidates: ReviewComment[];
   settings: AppSettings;
   onEvent?: ClaimProgress;
-}): Promise<ReviewComment[]> {
+}): Promise<{ kept: ReviewComment[]; budget?: BudgetExceeded }> {
   const { callJson, doc, candidates, settings, onEvent } = init;
   const preset = depthPreset(settings.review);
-  if (!preset.defenseRound || candidates.length === 0) return [...candidates];
+  if (!preset.defenseRound || candidates.length === 0) return { kept: [...candidates] };
 
   const results: PoolResult<ReviewComment | null>[] = await mapPool(
     candidates,
@@ -385,6 +397,7 @@ export async function defenseRound(init: {
   );
 
   const kept: ReviewComment[] = [];
+  let budget: BudgetExceeded | undefined;
   for (let i = 0; i < results.length; i++) {
     const r = results[i]!;
     if (r.ok) {
@@ -404,7 +417,7 @@ export async function defenseRound(init: {
     },
     undefined,
   );
-  return kept;
+  return { kept, budget };
 }
 
 /**
