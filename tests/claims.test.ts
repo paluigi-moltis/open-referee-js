@@ -130,7 +130,7 @@ describe('runClaimInventory', () => {
         ],
       }),
     ]);
-    const claims = await runClaimInventory({
+    const { claims } = await runClaimInventory({
       callJson: fn,
       doc: makeDoc(),
       triage: { summary: 's' },
@@ -154,7 +154,7 @@ describe('runClaimInventory', () => {
       [{ kind: 'budget', error: new BudgetExceeded(0.5, 0.4) }],
     ] as CallResult[][]) {
       const { fn } = scripted([...bad]);
-      const claims = await runClaimInventory({
+      const { claims } = await runClaimInventory({
         callJson: fn,
         doc: makeDoc(),
         triage: {},
@@ -166,7 +166,7 @@ describe('runClaimInventory', () => {
 
   it('returns [] when the response has no claims list', async () => {
     const { fn } = scripted([j({ something: 'else' })]);
-    const claims = await runClaimInventory({
+    const { claims } = await runClaimInventory({
       callJson: fn,
       doc: makeDoc(),
       triage: {},
@@ -180,7 +180,7 @@ describe('runClaimInventory', () => {
       { kind: 'invalid_json' },
       j({ claims: [{ components: { s: '1' } }] }),
     ]);
-    const claims = await runClaimInventory({
+    const { claims } = await runClaimInventory({
       callJson: fn,
       doc: makeDoc(),
       triage: {},
@@ -237,7 +237,7 @@ describe('verifyClaims', () => {
       claims.map((c) => j({ comments: [{ message: `m-${c['id']}`, score: 0.5 }] })),
     );
     const settings = makeSettings({ review: { maxClaims: 3, maxParallelCalls: 1 } });
-    const comments = await verifyClaims({
+    const { comments } = await verifyClaims({
       callJson: fn,
       doc: makeDoc(),
       claims,
@@ -293,7 +293,7 @@ describe('verifyClaims', () => {
       { kind: 'budget', error: new BudgetExceeded(0.5, 0.4) },
       { kind: 'budget', error: new BudgetExceeded(0.5, 0.4) },
     ]);
-    const comments = await verifyClaims({
+    const { comments } = await verifyClaims({
       callJson: fn,
       doc: makeDoc(),
       claims,
@@ -310,7 +310,7 @@ describe('verifyClaims', () => {
       { kind: 'llm_error', error: new LLMError('boom') },
       j({ comments: [{ message: 'from b', score: 0.4 }] }),
     ]);
-    const comments = await verifyClaims({
+    const { comments } = await verifyClaims({
       callJson: fn,
       doc: makeDoc(),
       claims,
@@ -321,7 +321,7 @@ describe('verifyClaims', () => {
 
   it('defaults paragraph_anchor to the claim anchor when the worker omits it', async () => {
     const { fn } = scripted([j({ comments: [{ message: 'm', score: 0.2 }] })]);
-    const comments = await verifyClaims({
+    const { comments } = await verifyClaims({
       callJson: fn,
       doc: makeDoc(),
       claims: [claim('z', 'central')],
@@ -465,7 +465,7 @@ describe('defenseRound', () => {
   it('returns candidates unchanged when the preset disables the gate', async () => {
     const { calls, fn } = scripted([]);
     const candidates = [candidate];
-    const out = await defenseRound({
+    const { kept: out } = await defenseRound({
       callJson: fn,
       doc: makeDoc(),
       candidates,
@@ -478,7 +478,7 @@ describe('defenseRound', () => {
 
   it('returns candidates unchanged when there are none', async () => {
     const { fn } = scripted([]);
-    const out = await defenseRound({
+    const { kept: out } = await defenseRound({
       callJson: fn,
       doc: makeDoc(),
       candidates: [],
@@ -492,7 +492,7 @@ describe('defenseRound', () => {
       j({ defense: 'It is right actually.', defense_strength: 'strong' }),
       j({ verdict: 'dismissed', reason: 'correct as stated' }),
     ]);
-    const out = await defenseRound({
+    const { kept: out } = await defenseRound({
       callJson: fn,
       doc: makeDoc(),
       candidates: [candidate],
@@ -521,7 +521,7 @@ describe('defenseRound', () => {
         },
       }),
     ]);
-    const out = await defenseRound({
+    const { kept: out } = await defenseRound({
       callJson: fn,
       doc: makeDoc(),
       candidates: [candidate],
@@ -543,7 +543,7 @@ describe('defenseRound', () => {
       j({ defense: 'd', defense_strength: 'none' }),
       j({ verdict: 'upheld', reason: 'r' }), // no "comment" key
     ]);
-    const out = await defenseRound({
+    const { kept: out } = await defenseRound({
       callJson: fn,
       doc: makeDoc(),
       candidates: [candidate],
@@ -560,7 +560,7 @@ describe('defenseRound', () => {
     ] as CallResult[]) {
       // first call (defense) fails — comment must survive
       let { fn } = scripted([bad]);
-      let out = await defenseRound({
+      let { kept: out } = await defenseRound({
         callJson: fn,
         doc: makeDoc(),
         candidates: [candidate],
@@ -569,12 +569,12 @@ describe('defenseRound', () => {
       expect(out.map((c) => c.comment)).toEqual(['The equality is wrong.']);
       // second call (adjudication) fails — comment must survive too
       ({ fn } = scripted([j({ defense: 'd', defense_strength: 'weak' }), bad]));
-      out = await defenseRound({
+      ({ kept: out } = await defenseRound({
         callJson: fn,
         doc: makeDoc(),
         candidates: [candidate],
         settings: makeSettings({ review: { maxParallelCalls: 1 } }),
-      });
+      }));
       expect(out.map((c) => c.comment)).toEqual(['The equality is wrong.']);
     }
   });
@@ -594,7 +594,7 @@ describe('defenseRound', () => {
       j({ defense: 'd', defense_strength: 'weak' }),
       j({ verdict: 'adjusted', comment: { message: 'c-fixed', score: 0.3 } }),
     ]);
-    const out = await defenseRound({
+    const { kept: out } = await defenseRound({
       callJson: fn,
       doc: makeDoc(),
       candidates: [a, b, c],
