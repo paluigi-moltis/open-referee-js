@@ -8,6 +8,8 @@
 /** One grounded criticism. severity: 0.0 (polish) .. 1.0 (result-invalidating). */
 export interface ReviewComment {
   id?: string;
+  /** short imperative problem statement (Python ReviewComment.title) */
+  title?: string;
   section: string;
   /** exact manuscript span the comment attaches to */
   quote: string;
