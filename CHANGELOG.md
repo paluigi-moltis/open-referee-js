@@ -4,6 +4,45 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7b — deterministic checkers (cross-refs, number consistency, table arithmetic)
+
+- **New deterministic checkers pass** (`src/pipeline/checkers.ts`, full port
+  of Python `pipeline/checkers.py`): runs at the verify head BEFORE the
+  claim workers, zero LLM cost. `crossReferenceCheck` (duplicate labels,
+  dangling figure/table/theorem/equation/section references aggregated per
+  class+label with ±110-char quote windows, orphan classes, non-monotone
+  numbering, missing-section registry; cap 8 findings),
+  `numberConsistencyCheck` (abstract-vs-body conflicts of the same named
+  quantity — last-two-content-words template matching, years/DOIs/LaTeX/
+  plain-integer/generic-tail exclusions, `0.6·10^-minDec` + 1%-relative
+  tolerances), and `tableArithmeticCheck` (total-row column sums and
+  row-total mismatches with paren-negative/comma/%/unicode-minus parsing,
+  separator-row detection, share/sum column exclusion). All regexes and
+  outputs parity-pinned against Python (`uv run` harness: fixture documents
+  - `f"{x:g}"` formatter incl. round-half-even ties + per-regex findall/
+    span probes; 388-double %g stress all green).
+- **Orchestrator wiring**: verify stage runs `runDeterministicChecks` only
+  when `state.checkerFindings` is empty (Python `if not
+self.state.checker_findings` — doi-resolution findings from the
+  bibliography stage share the array and suppress the scan, exactly as in
+  Python); findings persist to RunState BEFORE the verify-done emit; the
+  run emits `deterministic checks: consistency×1, xref×2` (sorted kinds).
+  `extractTheorems`/`extractTables` now run at pipeline start (Python
+  post-ingest point) so the checkers see theorem/table artifacts.
+- **Report**: checker findings JOIN the report at assemble as comments
+  (`checkerComments`: severity clamped [0.1, 0.95], title/message/quote
+  truncation 160/2500/240, provenance kept), anchored like validator
+  comments with combined `c{i:03d}` numbering. `render_markdown` port
+  updated to Python `_comment_header` (`### {i}. {title} — _{section}_` +
+  `_[severity 0.35] · [reference] · [deterministic]_` tag line) with the
+  Findings / `## Deterministic checks (N)` split (`_DETERMINISTIC_
+PROVENANCE = ('deterministic','recompute')`) and both italic preambles
+  verbatim. `ReviewComment` gains optional `title`.
+- `checkers.test.ts` (19 tests) + pipeline e2e extensions: findings appear
+  as deterministic comments in the report; resume with findings present
+  skips the scan (no second `deterministic checks:` emit); pre-seeded
+  doi findings suppress the scan (the Python vice-versa coupling).
+
 ### Stage 7a — copyedit annex + deterministic reference resolution
 
 - **New copyedit stage** (`… → validate → copyedit → assemble`, Python 9b
