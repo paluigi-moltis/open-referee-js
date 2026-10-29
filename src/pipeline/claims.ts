@@ -227,6 +227,9 @@ function normalizeComment(raw: unknown, claim: Record<string, unknown>): ReviewC
         : String(claim['anchor'] ?? ''),
     claimId: typeof claim['id'] === 'string' ? claim['id'] : undefined,
     category: typeof o['category'] === 'string' ? o['category'] : undefined,
+    // COMMENT_SCHEMA demands a title in every response; keep it (7b renders
+    // the header from it). Assemble still applies the Python fallback.
+    title: typeof o['title'] === 'string' ? o['title'] : undefined,
   };
 }
 

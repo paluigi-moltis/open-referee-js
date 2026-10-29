@@ -297,6 +297,9 @@ function challengerComment(
     paragraphAnchor:
       typeof o['paragraph_anchor'] === 'string' ? o['paragraph_anchor'] : undefined,
     category: typeof o['category'] === 'string' ? o['category'] : undefined,
+    // COMMENT_SCHEMA demands a title in every response; keep it (7b renders
+    // the header from it). Assemble still applies the Python fallback.
+    title: typeof o['title'] === 'string' ? o['title'] : undefined,
   };
 }
 
@@ -1405,6 +1408,8 @@ export async function* runReview(
         blockId: blockId ?? undefined,
         anchorConfidence: confidence,
         section: c.section || sectionOfBlock(doc, blockId) || '',
+        // Python assemble fallback: title=c.get('title') or 'Untitled comment'
+        title: c.title || 'Untitled comment',
       };
     });
 

@@ -202,3 +202,27 @@ describe('reportToMarkdown', () => {
     expect(reportToMarkdown(report())).not.toContain('## Deterministic checks');
   });
 });
+
+describe('comment title fallback (7b review fix)', () => {
+  it('renders the Python assemble fallback for missing LLM titles', () => {
+    const rep = report({
+      comments: [
+        comment({ section: 'S', quote: 'q', comment: 'msg', severity: 0.3 }),
+        comment({
+          section: 'S2',
+          quote: 'q2',
+          comment: 'msg2',
+          severity: 0.4,
+          title: 'Real title',
+          provenance: 'deterministic',
+        }),
+      ],
+    });
+    const md = reportToMarkdown(rep);
+    // Sections split by provenance; numbering restarts per section; the
+    // header keeps Python's f-string spacing ('title' + ' ' + ' — _sec_'
+    // = two spaces when section present).
+    expect(md).toContain('### 1. Real title  — _S2_');
+    expect(md).toContain('### 1.   — _S_');
+  });
+});
