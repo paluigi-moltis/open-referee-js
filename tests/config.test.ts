@@ -124,6 +124,39 @@ describe('mergeSettings', () => {
       DEFAULT_SETTINGS.searchOrder,
     );
   });
+
+  it('round-trips the Stage-7c budget tier block (universal rule)', () => {
+    const budget = { depth: 'auto', budgetUsd: 12.5 };
+    expect(mergeSettings({ budget }).budget).toEqual(budget);
+    // unknown depth / wrong-typed figures dropped
+    expect(
+      mergeSettings({ budget: { depth: 'turbo', budgetUsd: 'five' } }).budget,
+    ).toEqual({});
+    expect(mergeSettings({ budget: 'fast' }).budget).toBeUndefined();
+    expect(mergeSettings({ budget: { depth: 'fast', budgetUsd: 0 } }).budget).toEqual({
+      depth: 'fast',
+      budgetUsd: 0,
+    });
+    // absent budget stays absent (defaults apply at use time)
+    expect(mergeSettings({}).budget).toBeUndefined();
+  });
+
+  it('round-trips the 7c PlanKnob overrides on the review block', () => {
+    const review = {
+      recompute: false,
+      verifyPasses: 3,
+      claimRouting: 'all_strong',
+      outputBudget: 'high',
+      synthesis: false,
+      copyedit: false,
+      defenseSecondRound: true,
+    };
+    expect(mergeSettings({ review }).review).toEqual(review);
+    // invalid enum values dropped
+    expect(
+      mergeSettings({ review: { claimRouting: 'mega', outputBudget: 'max' } }).review,
+    ).toEqual({});
+  });
 });
 
 describe('storage roundtrip', () => {

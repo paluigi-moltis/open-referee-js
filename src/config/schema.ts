@@ -22,6 +22,32 @@ export interface ReviewDepth {
   defenseRound?: boolean;
   maxArtifacts?: number;
   maxParallelCalls?: number;
+  /**
+   * 7c budget-tier knobs (Python PlanKnobs; user overrides win over the
+   * tier preset — Python DepthPreset fields). Absent = tier default.
+   */
+  recompute?: boolean;
+  verifyPasses?: number;
+  /** base | strong | all_strong (Python claim_routing) */
+  claimRouting?: string;
+  /** low | default | high (Python output_budget) */
+  outputBudget?: string;
+  synthesis?: boolean;
+  copyedit?: boolean;
+  defenseSecondRound?: boolean;
+}
+
+/**
+ * Budget tier block (Stage 7c; Python ReviewConfig.depth + budget_usd).
+ * `depth` selects the tier preset; 'auto' switches the run to the
+ * budget-driven planner. `budgetUsd` is the hard plan ceiling in USD
+ * (falls back to the UsageLedger cap `maxCostUsd`).
+ */
+export interface BudgetSettings {
+  /** fast | standard | deep | auto */
+  depth?: string;
+  /** hard budget ceiling in USD */
+  budgetUsd?: number;
 }
 
 export interface AppSettings {
@@ -51,6 +77,11 @@ export interface AppSettings {
    * stored settings without this field stay valid — schema v stays 1).
    */
   review?: ReviewDepth;
+  /**
+   * Budget tier (Stage 7c, additive — Python review.depth + budget).
+   * mergeSettings round-trips it (universal rule); absent = 'standard'.
+   */
+  budget?: BudgetSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

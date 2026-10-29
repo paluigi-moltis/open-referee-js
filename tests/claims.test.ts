@@ -77,6 +77,8 @@ function makeDoc(): Document {
 
 describe('depthPreset', () => {
   it('Python standard defaults when settings.review is missing', () => {
+    // 7c: the returned preset is the full PlanKnobs superset — the new
+    // fields carry the Python DepthPreset('standard') defaults.
     expect(depthPreset(undefined)).toEqual({
       maxClaims: 60,
       perSectionLenses: true,
@@ -84,6 +86,13 @@ describe('depthPreset', () => {
       defenseRound: true,
       maxArtifacts: 12,
       maxParallelCalls: 8,
+      recompute: true,
+      verifyPasses: 2,
+      claimRouting: 'strong',
+      outputBudget: 'default',
+      synthesis: true,
+      copyedit: true,
+      defenseSecondRound: false,
     });
   });
 

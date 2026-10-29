@@ -1,6 +1,7 @@
 import {
   DEFAULT_SETTINGS,
   type AppSettings,
+  type BudgetSettings,
   type ReviewDepth,
   type RoleConfig,
 } from './schema';
@@ -90,6 +91,7 @@ export function mergeSettings(raw: unknown): AppSettings {
         : [...d.searchOrder],
     searchApiKeys: mergeSearchApiKeys(raw['searchApiKeys']),
     review: mergeReview(raw['review']),
+    budget: mergeBudget(raw['budget']),
   };
 }
 
@@ -117,6 +119,44 @@ function mergeReview(raw: unknown): ReviewDepth | undefined {
   out.perSectionLenses = bool(raw['perSectionLenses']);
   out.wholePaperPasses = bool(raw['wholePaperPasses']);
   out.defenseRound = bool(raw['defenseRound']);
+  // 7c budget-tier knob overrides (Python PlanKnobs fields).
+  out.recompute = bool(raw['recompute']);
+  out.verifyPasses = num(raw['verifyPasses']);
+  out.synthesis = bool(raw['synthesis']);
+  out.copyedit = bool(raw['copyedit']);
+  out.defenseSecondRound = bool(raw['defenseSecondRound']);
+  if (
+    raw['claimRouting'] === 'base' ||
+    raw['claimRouting'] === 'strong' ||
+    raw['claimRouting'] === 'all_strong'
+  ) {
+    out.claimRouting = raw['claimRouting'];
+  }
+  if (
+    raw['outputBudget'] === 'low' ||
+    raw['outputBudget'] === 'default' ||
+    raw['outputBudget'] === 'high'
+  ) {
+    out.outputBudget = raw['outputBudget'];
+  }
+  return out;
+}
+
+/** Budget tier block: round-trip depth + ceiling (Stage 7c, universal rule). */
+function mergeBudget(raw: unknown): BudgetSettings | undefined {
+  if (!isRecord(raw)) return undefined;
+  const out: BudgetSettings = {};
+  if (
+    raw['depth'] === 'fast' ||
+    raw['depth'] === 'standard' ||
+    raw['depth'] === 'deep' ||
+    raw['depth'] === 'auto'
+  ) {
+    out.depth = raw['depth'];
+  }
+  if (typeof raw['budgetUsd'] === 'number' && Number.isFinite(raw['budgetUsd'])) {
+    out.budgetUsd = raw['budgetUsd'];
+  }
   return out;
 }
 

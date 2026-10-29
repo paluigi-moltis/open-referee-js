@@ -55,6 +55,78 @@ export function depthPreset(review?: ReviewDepth): Required<ReviewDepth> {
     defenseRound: review?.defenseRound ?? true,
     maxArtifacts: review?.maxArtifacts ?? 12,
     maxParallelCalls: review?.maxParallelCalls ?? 8,
+    recompute: review?.recompute ?? true,
+    verifyPasses: review?.verifyPasses ?? 2,
+    claimRouting: review?.claimRouting ?? 'strong',
+    outputBudget: review?.outputBudget ?? 'default',
+    synthesis: review?.synthesis ?? true,
+    copyedit: review?.copyedit ?? true,
+    defenseSecondRound: review?.defenseSecondRound ?? false,
+  };
+}
+
+/**
+ * Tier defaults from the budget tier (Stage 7c, Python ReviewConfig
+ * .depth_preset()): the user's explicit `review` overrides win per field —
+ * tier fills only what the user left unset. 'auto' has no fixed preset
+ * (Python raises; here the deterministic planner sets the knobs) so the
+ * standard defaults apply until the plan exists.
+ */
+export function depthPresetFromTier(settings: AppSettings): Required<ReviewDepth> {
+  const tier = settings.budget?.depth?.toLowerCase().trim() ?? 'standard';
+  const user = settings.review;
+  const tierDefaults: ReviewDepth =
+    tier === 'fast'
+      ? {
+          maxClaims: 20,
+          perSectionLenses: false,
+          wholePaperPasses: true,
+          defenseRound: false,
+          maxArtifacts: 6,
+          recompute: false,
+          verifyPasses: 1,
+          claimRouting: 'base',
+          outputBudget: 'low',
+        }
+      : tier === 'deep'
+        ? {
+            maxClaims: 150,
+            perSectionLenses: true,
+            wholePaperPasses: true,
+            defenseRound: true,
+            maxArtifacts: 50,
+            recompute: true,
+            verifyPasses: 3,
+            claimRouting: 'all_strong',
+            outputBudget: 'high',
+            defenseSecondRound: true,
+          }
+        : {
+            // 'standard' (and 'auto' pre-plan)
+            maxClaims: 60,
+            perSectionLenses: true,
+            wholePaperPasses: true,
+            defenseRound: true,
+            maxArtifacts: 12,
+            recompute: true,
+            verifyPasses: 2,
+            claimRouting: 'strong',
+            outputBudget: 'default',
+          };
+  return {
+    maxClaims: user?.maxClaims ?? tierDefaults.maxClaims!,
+    perSectionLenses: user?.perSectionLenses ?? tierDefaults.perSectionLenses!,
+    wholePaperPasses: user?.wholePaperPasses ?? tierDefaults.wholePaperPasses!,
+    defenseRound: user?.defenseRound ?? tierDefaults.defenseRound!,
+    maxArtifacts: user?.maxArtifacts ?? tierDefaults.maxArtifacts!,
+    maxParallelCalls: user?.maxParallelCalls ?? 8,
+    recompute: user?.recompute ?? tierDefaults.recompute!,
+    verifyPasses: user?.verifyPasses ?? tierDefaults.verifyPasses!,
+    claimRouting: user?.claimRouting ?? tierDefaults.claimRouting!,
+    outputBudget: user?.outputBudget ?? tierDefaults.outputBudget!,
+    synthesis: user?.synthesis ?? true,
+    copyedit: user?.copyedit ?? true,
+    defenseSecondRound: user?.defenseSecondRound ?? tierDefaults.defenseSecondRound!,
   };
 }
 
