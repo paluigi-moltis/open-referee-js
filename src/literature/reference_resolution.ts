@@ -107,25 +107,48 @@ export function norm(s: string): string {
 }
 
 /**
- * Python `round(x, 2)` is banker's rounding; JS `Math.round` half-up-drifts
- * on exact halves. Same approach as roundHalfEven2 in src/report/anchor.ts,
- * adapted to an already-computed float (not a fraction): round half-to-even
- * on the value scaled by 100.
+ * Faithful `round(x, 2)` for a finite double (CPython `_Py_dg_dtoa`
+ * semantics): correctly-rounded decimal conversion of the BINARY value,
+ * with half-to-even applying only when the value is an exact decimal
+ * half (m/200 for odd m — e.g. 0.125 -> 0.12, but 0.715's double is
+ * slightly below the half so it rounds DOWN to 0.71). Scaling by 100
+ * first double-rounds (0.715 * 100 = 71.5 exactly), so the half test
+ * runs on the exact binary expansion via BigInt, and everything else
+ * goes through toFixed(2) (spec: correctly-rounded decimal string).
+ * Parity: 500-seeded-fuzz + 20 edge cases vs `uv run python` round().
  */
-function roundHalfEven2(x: number): number {
-  // Exact-halves in binary floats are the only hazard; scale by 100 and
-  // round half-to-even on the scaled integer.
-  const scaled = x * 100;
-  const fl = Math.floor(scaled);
-  const diff = scaled - fl;
-  const eps = 1e-9;
-  let units: number;
-  if (Math.abs(diff - 0.5) < eps) {
-    units = fl % 2 === 0 ? fl : fl + 1;
+export function roundPy2(x: number): number {
+  if (!Number.isFinite(x)) return x;
+  const buf = new ArrayBuffer(8);
+  new Float64Array(buf)[0] = x;
+  const bits = BigInt.asUintN(64, new BigUint64Array(buf)[0]!);
+  const sign = bits >> 63n ? -1n : 1n;
+  const rawExp = Number((bits >> 52n) & 0x7ffn);
+  const frac = bits & ((1n << 52n) - 1n);
+  let num: bigint;
+  let exp: bigint;
+  if (rawExp === 0) {
+    num = frac;
+    exp = -1074n;
   } else {
-    units = Math.round(scaled);
+    num = frac | (1n << 52n);
+    exp = BigInt(rawExp - 1075);
   }
-  return units / 100;
+  const signed = sign * num;
+  const scaled = signed * 200n;
+  let m: bigint | null = null;
+  if (exp >= 0n) {
+    m = scaled << exp;
+  } else {
+    const d = 1n << -exp;
+    if (scaled % d === 0n) m = scaled / d;
+  }
+  if (m !== null && m % 2n === 1n) {
+    const down = (m - 1n) / 2n;
+    const up = (m + 1n) / 2n;
+    return Number(down % 2n === 0n ? down : up) / 100;
+  }
+  return Number(x.toFixed(2));
 }
 
 /** Python `_score(entry, title_guess, item)`: max(ratio, whole*0.9). */
@@ -187,7 +210,7 @@ export async function resolveReferences(
     const rec: ResolutionRecord = {
       ref: entry.slice(0, 240),
       status: 'unmatched',
-      score: roundHalfEven2(bestScore),
+      score: roundPy2(bestScore),
     };
     if (best !== null && bestScore >= MATCH_THRESHOLD) {
       const matched = best as LiteratureItem;
@@ -217,9 +240,10 @@ export async function resolveReferences(
   // Overall time box: on timeout, every entry is returned unmatched with
   // error 'timeout' (Python asyncio.wait_for + TimeoutError branch).
   const pooled = mapPool(entries, CONCURRENCY, guarded);
-  const timer = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), timeoutS * 1000),
-  );
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise<'timeout'>((resolve) => {
+    timerId = setTimeout(() => resolve('timeout'), timeoutS * 1000);
+  });
   let settled: 'timeout' | 'done' = 'timeout';
   let results: (ResolutionRecord | undefined)[] = [];
   try {
@@ -231,6 +255,7 @@ export async function resolveReferences(
       timer,
     ]);
     settled = outcome;
+    clearTimeout(timerId);
   } catch {
     // mapPool never rejects (per-slot error capture); defensive only.
     settled = 'done';
@@ -271,14 +296,15 @@ export function renderResolutions(records: ResolutionRecord[]): string {
   for (const r of records) {
     if (r.status === 'matched') {
       const doi = r.doi || 'no-doi';
-      const title = String(r.title ?? '').slice(0, 110);
+      // Python `str(r.get('title'))` renders null as 'None'; `or`-defaults treat 0/'' as missing.
+      const title = String(r.title ?? 'None').slice(0, 110);
       const venue = r.venue || '?';
-      const year = r.year ?? '?';
+      const year = r.year || '?';
       lines.push(
         `- MATCHED ${doi} :: ${title} (${venue}, ${year}) [score ${pyFloat(r.score)}]`,
       );
     } else {
-      const ref = String(r.ref ?? '').slice(0, 110);
+      const ref = String(r.ref ?? 'None').slice(0, 110);
       lines.push(`- UNMATCHED :: ${ref} [best score ${pyFloat(r.score)}]`);
     }
   }

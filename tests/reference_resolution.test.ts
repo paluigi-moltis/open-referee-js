@@ -4,6 +4,7 @@ import {
   queryFor,
   renderResolutions,
   resolveReferences,
+  roundPy2,
   score,
   splitReferences,
   titleGuess,
@@ -455,6 +456,60 @@ describe('renderResolutions (char-parity with Python _render_resolutions)', () =
     for (let i = 0; i < sets.length; i++) {
       expect(renderResolutions(sets[i]!), `set ${i}`).toBe(PY_RENDERS[i]);
     }
+  });
+
+  it('renders null/zero fields with Python or/str() semantics (review F2)', () => {
+    // str(None) -> 'None'; year 0 -> '?' (Python `or`); score keeps as-is
+    expect(
+      renderResolutions([
+        {
+          ref: 'r',
+          status: 'matched',
+          score: 0.715,
+          doi: '10.1/x',
+          title: null,
+          venue: 'V',
+          year: 0,
+          source: 'crossref',
+        },
+      ]),
+    ).toBe('- MATCHED 10.1/x :: None (V, ?) [score 0.715]');
+    expect(
+      renderResolutions([
+        {
+          ref: 'r',
+          status: 'matched',
+          score: 0.125,
+          doi: '10.1/y',
+          title: 'T',
+          venue: null,
+          year: null,
+          source: 'crossref',
+        },
+      ]),
+    ).toBe('- MATCHED 10.1/y :: T (?, ?) [score 0.125]');
+    expect(
+      renderResolutions([
+        { ref: null as unknown as string, status: 'unmatched', score: 0.995 },
+      ]),
+    ).toBe('- UNMATCHED :: None [best score 0.995]');
+  });
+
+  it('rounds scores like Python round(x, 2) (review F3: no scaling fudge)', () => {
+    // roundPy2 is the resolveReferences score-rounding helper. 0.715's
+    // double is BELOW the half (scaling by 100 first yields exactly 71.5
+    // and would banker's-round UP to 0.72 — Python gives 0.71); 0.125 is
+    // an exact binary half -> half-to-even 0.12. Pins from uv-run Python.
+    expect(roundPy2(0.715)).toBe(0.71);
+    expect(roundPy2(143 / 200)).toBe(0.71);
+    expect(roundPy2(199 / 200)).toBe(0.99);
+    expect(roundPy2(294 / 400)).toBe(0.73);
+    expect(roundPy2(8.845)).toBe(8.85);
+    expect(roundPy2(0.125)).toBe(0.12);
+    expect(roundPy2(2.675)).toBe(2.67);
+    expect(roundPy2(0.115)).toBe(0.12);
+    expect(roundPy2(0)).toBe(0);
+    expect(roundPy2(1)).toBe(1);
   });
 
   it('truncates the joined block at 20000 chars', () => {

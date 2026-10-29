@@ -25,8 +25,10 @@ interface MatchBlock {
 export class SequenceMatcher {
   private readonly a: string[];
   private readonly b: string[];
-  /** char -> ascending b-indices (Python b2j with junk=none, autojunk off). */
+  /** char -> ascending b-indices (Python b2j with junk=none). */
   private readonly b2j: Map<string, number[]>;
+  /** Python autojunk: popular elements (>1% of b when len(b) >= 200). */
+  private readonly bpopular: Set<string>;
   private blocks: MatchBlock[] | null = null;
   private ratioCache: number | null = null;
 
@@ -39,6 +41,21 @@ export class SequenceMatcher {
       const idx = this.b2j.get(ch);
       if (idx === undefined) this.b2j.set(ch, [j]);
       else idx.push(j);
+    }
+    // Python autojunk (default ON in SequenceMatcher(None, a, b)): for
+    // len(b) >= 200, elements occurring on >1% of positions are "popular"
+    // and drop out of b2j. find_longest_match won't seed a match on them,
+    // but may still EXTEND across them (CPython difflib parity).
+    this.bpopular = new Set();
+    const n = this.b.length;
+    if (n >= 200) {
+      const threshold = Math.trunc(n / 100) + 1;
+      for (const [ch, idx] of this.b2j) {
+        if (idx.length > threshold) {
+          this.bpopular.add(ch);
+          this.b2j.delete(ch);
+        }
+      }
     }
   }
 

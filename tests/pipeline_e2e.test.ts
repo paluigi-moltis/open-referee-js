@@ -449,7 +449,7 @@ describe('runReview validator filtering', () => {
       // copyedit annex
       j({ items: [] }),
     );
-    const { state, events } = await drain(
+    const { state } = await drain(
       runReview({
         doc: makeDoc(),
         settings: makeSettings({
@@ -462,33 +462,7 @@ describe('runReview validator filtering', () => {
         providers: { strong, small },
       }),
     );
-    // eslint-disable-next-line no-console
-    console.log(
-      'DBGGATE small calls:',
-      small.calls
-        .map(
-          (c) =>
-            (c.messages[0]!.content.match(
-              /You are the ([A-Z ]+REFEREE|AUTHORS' DEFENSE COUNSEL)/,
-            ) ?? [c.messages[0]!.content.slice(0, 40)])[0],
-        )
-        .join(' >> '),
-    );
-    // eslint-disable-next-line no-console
-    console.log(
-      'DBGGATE events:',
-      events
-        .map((e) => e.stage + ':' + e.status + (e.detail ? ':' + e.detail : ''))
-        .join(' | '),
-    );
     const report = state.report as import('../src/report/models').ReviewReport;
-    // eslint-disable-next-line no-console
-    console.log(
-      'DBGCOMMENTS',
-      report.comments.map((c) => c.comment).join(','),
-      '| severity:',
-      report.comments.map((c) => c.severity).join(','),
-    );
     expect(report.comments.map((c) => c.comment)).toEqual([
       'adjusted message',
       'keep me',

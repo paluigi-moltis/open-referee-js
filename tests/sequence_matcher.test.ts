@@ -538,4 +538,15 @@ describe('SequenceMatcher (parity with difflib)', () => {
     // Array.from iterates code points; Python 3 strings are code points too.
     expect(similarityRatio('𝐀𝐁𝐂', '𝐀𝐁𝐃')).toBeCloseTo((2 * 2) / 6, 12);
   });
+
+  describe('autojunk (Python default, review F1)', () => {
+    it('applies popular-element junk for len(b) >= 200', () => {
+      // CPython: SequenceMatcher(None, a, b).ratio() with autojunk ON — the
+      // popular 'word ' elements drop out of b2j, giving 0.9132427...;
+      // autojunk-off would return 0.9406...
+      const a = 'word '.repeat(44).slice(0, 220);
+      const b = ('word '.repeat(40) + 'zebra '.repeat(3)).slice(0, 220);
+      expect(new SequenceMatcher(a, b).ratio()).toBeCloseTo(0.91324200913242, 12);
+    });
+  });
 });
