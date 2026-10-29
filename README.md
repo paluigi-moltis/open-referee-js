@@ -12,7 +12,7 @@ CORS-open literature APIs: OpenAlex, Crossref, Tavily, TinyFish).
 - Your API key never leaves the page and is never persisted — it lives in
   memory for the session only (opt-in encrypted storage arrives in Stage 2).
 
-## Status: Stages 1–6 complete
+## Status: Stages 1–6 + 7a complete
 
 This is a working vertical slice of the port. It is **not** yet at full
 feature parity with the Python original. The pipeline is now:
@@ -21,8 +21,12 @@ web router + LLM surveyor + Crossref missing-reference lookup, deduped into
 a context pack) → scout (PubPeer / OpenReview / PREreview community scans)
 → verify (per-claim typed workers + section lenses + whole-paper coherence)
 → challenge (per-section + whole-paper challenger + defense gate) →
-bibliography (SMALL citation audit against the context pack) → meta-review
-→ validate → assemble, with a budget cap that drains into a **partial
+bibliography (SMALL citation audit against the context pack, preceded by a
+deterministic Crossref/OpenAlex reference-resolution pass whose MATCHED/
+UNMATCHED ground truth feeds the audit prompt and RunState checker
+findings) → meta-review → validate → copyedit (SMALL language-mechanics
+annex; verbatim quotes anchor-verified, rendered as a "Suggested language
+fixes" table) → assemble, with a budget cap that drains into a **partial
 report** instead of discarding the run, a live progress bar, comment→block
 anchor links in a scrollable manuscript pane, a clean print stylesheet, and
 a resume list for in-progress runs (persisted per-stage artifacts).

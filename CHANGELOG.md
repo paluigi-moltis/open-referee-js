@@ -4,6 +4,42 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7a — copyedit annex + deterministic reference resolution
+
+- **New copyedit stage** (`… → validate → copyedit → assemble`, Python 9b
+  `_copyedit` port): one SMALL-role pass listing language-mechanics fixes
+  (typo | grammar | phrasing | terminology). Items are sanitized exactly
+  like Python: verbatim-quote requirement enforced by the deterministic
+  anchor resolver (quotes that cannot be located in the manuscript are
+  DROPPED — hallucination guard), 300-char truncation, cap 40, section
+  stamped from the resolved block. Fail-soft: an LLM/parse failure yields
+  no items and never blocks the report; only a budget cap surfaces. The
+  `copyeditItems` artifact persists **before** the done event, so resume
+  never re-calls the stage. Old runs without the stage keep loading.
+  _Documented divergence:_ Python gates the stage on `plan_knobs().copyedit`
+  and `budget_allows('copyedit')` (budget harness); pre-catch-up-7c the
+  stage is always-on here.
+- **Deterministic DOI resolution** (Python `_resolve_references` +
+  `literature/reference_resolution.py` port): before the bibliography audit,
+  every bibliography entry is looked up on Crossref + OpenAlex (concurrency
+  4, per-call fail-soft, 60s overall timeout → all-unmatched records) and
+  scored against the entry's probable title with a faithful
+  `difflib.SequenceMatcher.ratio()` port (`max(ratio, whole*0.9)`, matched
+  iff ≥ 0.72). Records memoize on RunState (`doiResolutions`, persisted
+  before the audit), render into the bibliography prompt's new
+  `{resolution}` slot (Python `BIBLIOGRAPHY_USER` parity, machine-verified),
+  and the first 20 unmatched entries become deterministic
+  `doi-resolution` checker findings on RunState (not report comments yet —
+  the full checkers land in 7b). Zero LLM cost; network clients are
+  injected, so tests stay offline.
+- **Report**: optional `copyeditItems` render as the Python
+  `Suggested language fixes (N)` table (pipe/newline cells escaped,
+  `—` section fallback); comments carry optional `provenance`.
+- `reference_resolution` parity harness (uv-run Python reprs pinned in
+  tests): 26 SequenceMatcher pairs, 10 splitReferences fixtures,
+  5 titleGuess/norm/queryFor entries, 35 scores, 3 renderResolutions
+  outputs; copyedit + bibliography prompts char-identical.
+
 ## [0.1.0] — 2026-10-16
 
 Stage 1 skeleton of the static client-side TS port of
