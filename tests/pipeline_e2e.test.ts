@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { runReview } from '../src/pipeline/orchestrator';
 import type { StageProgress } from '../src/pipeline/orchestrator';
 import type { RunState, StageEvent } from '../src/pipeline/state';
-import { listRuns } from '../src/runs/store';
+import { listRuns, loadRun } from '../src/runs/store';
 import type { Document } from '../src/ingestion/document';
 import { readMarkdown } from '../src/ingestion/readers_md';
 import { DEFAULT_SETTINGS, type AppSettings } from '../src/config/schema';
@@ -289,6 +289,18 @@ describe('runReview happy path', () => {
     // verify progress carries unitsDone/unitsTotal per claim
     const progress = progressCalls.filter((p) => p !== undefined);
     expect(progress.some((p) => p!.unitsTotal === 2)).toBe(true);
+
+    // deterministic checkers ran at the verify head (zero LLM cost) — the
+    // fixture has "999 replications" and Section headings, no dangling refs;
+    // the claims inventory ANCHOR "bootstrap with 999 replications" is prose.
+    // The MD fixture has no figure/table/theorem structure -> likely no xref
+    // findings, but the checkerFindings state contract must hold either way.
+    expect(Array.isArray(state.checkerFindings)).toBe(true);
+    const det = state.checkerFindings as Record<string, unknown>[];
+    for (const f of det) {
+      expect(f['provenance']).toBe('deterministic');
+      expect(typeof f['check']).toBe('string');
+    }
 
     // state machine consistency
     expect(state.stages['assemble']).toBe('done');
@@ -681,5 +693,250 @@ describe('runReview depth preset wiring', () => {
     expect(small2.calls[5]!.messages[0]!.content).toContain(
       'LITERATURE COHERENCE REFEREE',
     );
+  });
+});
+
+describe('deterministic checkers (7b)', () => {
+  // A manuscript with real structure: duplicate Figure 1 captions, a dangling
+  // Figure 9 reference, and a section reference to a missing section — the
+  // xref check must find them and the findings must reach the REPORT as
+  // provenance-'deterministic' comments (Python _assemble parity). The
+  // abstract/body carry a number conflict for the consistency check.
+  const CHECKER_MD = `# Checker Paper
+
+## Abstract
+
+Our mean absolute error is 3.42 across all benchmarks in this study.
+
+## 1. Intro
+
+Figure 1: the pipeline. See Section 4 for the ablations. Figure 9 plots the
+rest. The reported mean absolute error is 4.10 in the harder split.
+
+## References
+
+[1] Smith, J. (2001). A paper. Journal of Papers.
+`;
+
+  function checkerDoc(): Document {
+    return readMarkdown(CHECKER_MD);
+  }
+
+  it('findings reach the report as deterministic comments in their own section', async () => {
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      j({ claims: [] }), // claimless: verify = checkers only
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ overall_feedback: 'ok' }),
+      // validator never runs (no candidates)
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+      j({ items: [] }),
+    );
+    const { state, events } = await drain(
+      runReview({
+        doc: checkerDoc(),
+        settings: makeSettings(),
+        providers: { strong, small },
+      }),
+    );
+
+    // the verify head emitted the sorted-kinds detail (Python format):
+    // sorted kinds joined by ', ' — consistency before xref alphabetically
+    const detEvent = events.find(
+      (e) => e.stage === 'verify' && e.detail?.startsWith('deterministic checks: '),
+    );
+    expect(detEvent).toBeDefined();
+    expect(detEvent!.detail).toBe('deterministic checks: consistency×1, xref×2');
+
+    // findings persisted on the run state
+    const findings = state.checkerFindings as Record<string, unknown>[];
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((f) => f['provenance'] === 'deterministic')).toBe(true);
+    expect(findings.some((f) => f['check'] === 'xref')).toBe(true);
+
+    // findings JOIN the report (Python _assemble: checkerComments first) and
+    // are anchored like every other comment (ids over the combined list).
+    const report = state.report as import('../src/report/models').ReviewReport;
+    const detComments = report.comments.filter((c) => c.provenance === 'deterministic');
+    expect(detComments.length).toBe(findings.length);
+    // markdown ingest has no figure artifacts pre-extraction wiring: the xref
+    // check sees only the prose-embedded "Figure 1: the pipeline."
+    // definition -> Figure 9 dangles, Section 4 is unregistered
+    expect(detComments.some((c) => c.title === 'Reference to undefined Figure 9')).toBe(
+      true,
+    );
+    expect(
+      detComments.some(
+        (c) => c.title === 'References to sections without matching headings',
+      ),
+    ).toBe(true);
+    // section stamped from the resolved block's section path
+    const fig9 = detComments.find(
+      (c) => c.title === 'Reference to undefined Figure 9',
+    )!;
+    expect(fig9.section).toBe('1. Intro');
+    // ids number the COMBINED list (checker comments come first: c000...)
+    expect(report.comments[0]!.provenance).toBe('deterministic');
+    expect(report.comments[0]!.id).toBe('c000');
+  });
+
+  it('resume with checkerFindings present: the scan is skipped (emit absent)', async () => {
+    // Run once to completion, then resume the finished run: verify is
+    // done-with-artifact so the stage is skipped entirely — but the DOI
+    // findings coupling needs a different path: simulate a run where the
+    // state carries checker findings but verify re-enters (failed verify).
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      j({ claims: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ overall_feedback: 'first pass' }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+      j({ items: [] }),
+    );
+    const first = await drain(
+      runReview({
+        doc: checkerDoc(),
+        settings: makeSettings(),
+        providers: { strong, small },
+      }),
+    );
+    const resumeState = await loadRun(first.state.runId);
+    const findingsBefore = (resumeState!.checkerFindings ?? []).length;
+    expect(findingsBefore).toBeGreaterThan(0);
+
+    // Resume the completed run. Every stage re-enters done-with-artifact
+    // except claims (failed: empty inventory) — verify itself is done with
+    // candidates, so the deterministic scan MUST NOT re-run and NO second
+    // 'deterministic checks:' event may appear.
+    const strong2 = new ScriptedProvider();
+    strong2.queue(j({ claims: [] })); // claims re-run only
+    const small2 = new ScriptedProvider();
+    const second = await drain(
+      runReview({
+        doc: checkerDoc(),
+        settings: makeSettings(),
+        providers: { strong: strong2, small: small2 },
+        resume: { state: resumeState! },
+      }),
+    );
+    const detEvents = second.events.filter(
+      (e) => e.stage === 'verify' && e.detail?.startsWith('deterministic checks: '),
+    );
+    expect(detEvents).toHaveLength(0);
+    // findings preserved exactly (no double-append)
+    expect((second.state.checkerFindings ?? []).length).toBe(findingsBefore);
+    // report still assembled; deterministic comments re-derive from the
+    // preserved findings via checkerComments at assemble time
+    const report = second.state.report as import('../src/report/models').ReviewReport;
+    const detComments = report.comments.filter((c) => c.provenance === 'deterministic');
+    // 4 findings: Figure 9 dangling + section-refs + number conflict + one
+    // DOI resolution (bibliography unmatched entry '[2] Doe, J. (2010).' —
+    // the REFERENCES fixture entry fails to match offline -> doi finding)
+    expect(detComments.map((c) => c.title)).toEqual([
+      'Reference to undefined Figure 9',
+      'References to sections without matching headings',
+      'Conflicting values for "absolute error is" (3.42 vs 4.10)',
+      'Reference not resolvable in Crossref/OpenAlex',
+    ]);
+  });
+
+  it('coupling: pre-seeded doi findings make verify skip the deterministic scan', async () => {
+    // Python gate is `if not self.state.checker_findings` — any existing
+    // findings (e.g. doi-resolution from a resumed bibliography) suppress
+    // the scan. Simulate by injecting findings into the resume state.
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      j({ claims: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ overall_feedback: 'ok' }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+      j({ items: [] }),
+    );
+    const resumeState = await loadRun(
+      (
+        await drain(
+          runReview({
+            doc: checkerDoc(),
+            settings: makeSettings(),
+            providers: { strong, small },
+          }),
+        )
+      ).state.runId,
+    );
+    // wipe + re-seed findings the way the bibliography doi-resolution would
+    resumeState!.checkerFindings = [
+      {
+        check: 'doi-resolution',
+        title: 'Reference not resolvable in Crossref/OpenAlex',
+        message: 'phantom',
+        quote: '[1] Smith',
+        category: 'reference',
+        severity: 0.4,
+        meta: { kind: 'unmatched', score: 0 },
+        provenance: 'deterministic',
+      },
+    ];
+    const strong2 = new ScriptedProvider();
+    strong2.queue(
+      j({ claims: [] }), // claims re-run
+      // verify re-enters too (simulate by wiping candidates + verify status)
+    );
+    const small2 = new ScriptedProvider();
+    resumeState!.stages['verify'] = 'pending';
+    resumeState!.artifacts!.candidates = [];
+    const { events, state } = await drain(
+      runReview({
+        doc: checkerDoc(),
+        settings: makeSettings(),
+        providers: { strong: strong2, small: small2 },
+        resume: { state: resumeState! },
+      }),
+    );
+    // the scan is SKIPPED: no new deterministic-checks emit, and the seeded
+    // doi finding is still the ONLY checker finding
+    expect(
+      events.filter(
+        (e) => e.stage === 'verify' && e.detail?.startsWith('deterministic checks: '),
+      ),
+    ).toHaveLength(0);
+    expect((state.checkerFindings ?? []).length).toBe(1);
+    expect((state.checkerFindings ?? [])[0]!['check']).toBe('doi-resolution');
+    // and the doi finding still reaches the report as a comment
+    const report = state.report as import('../src/report/models').ReviewReport;
+    const detComments = report.comments.filter((c) => c.provenance === 'deterministic');
+    expect(detComments.map((c) => c.comment)).toEqual(['phantom']);
   });
 });

@@ -51,12 +51,13 @@ describe('reportToMarkdown', () => {
       report({
         comments: [
           comment({
+            title: 'Broken finding',
             severity: 0.85,
             section: 'Section 3',
             quote: 'the span',
             comment: 'broken',
           }),
-          comment({ severity: 0.3, quote: '', section: '' }),
+          comment({ title: 'Untitled finding', severity: 0.3, quote: '', section: '' }),
         ],
         usage: {
           byRole: {},
@@ -71,11 +72,15 @@ describe('reportToMarkdown', () => {
     expect(md).toContain('_Generated 2026-10-16 14:00 UTC_');
     expect(md).toContain('## Overall feedback');
     expect(md).toContain('The proof of Lemma 2 is incomplete.');
-    expect(md).toContain('## Detailed comments (2)');
-    // highest severity first, severity formatted to 2 decimals
-    expect(md).toMatch(/### 1\. .* \[severity 0\.85\] — _Section 3_/);
+    // provenance-less comments render under Findings (Python split)
+    expect(md).toContain('## Findings (2)');
+    expect(md).not.toContain('## Deterministic checks');
+    // Python _comment_header shape: ### {i}. {title} — _{section}_ + tag line
+    expect(md).toContain('### 1. Broken finding  — _Section 3_');
+    expect(md).toContain('_[severity 0.85] · [general]_');
     expect(md).toContain('> the span');
-    expect(md).toMatch(/^### 2\. Comment \[severity 0\.30\]$/m);
+    // no section: the f-string keeps the trailing space; category defaults
+    expect(md).toContain('### 2. Untitled finding \n_[severity 0.30] · [general]_');
     expect(md).toContain(
       'Input tokens: 12,000 · Output tokens: 3,400 · Estimated cost: $0.0123',
     );
@@ -136,5 +141,64 @@ describe('reportToMarkdown', () => {
 
   it('falls back to _(none)_ for empty overall text', () => {
     expect(reportToMarkdown(report({ overall: '' }))).toContain('_(none)_');
+  });
+
+  it('splits deterministic-provenance comments into their own section (Python _DETERMINISTIC_PROVENANCE)', () => {
+    const md = reportToMarkdown(
+      report({
+        comments: [
+          comment({
+            title: 'LLM finding',
+            severity: 0.85,
+            category: 'statistical',
+            provenance: 'claim_verify 2-of-2',
+          }),
+          comment({
+            title: 'Duplicate label Figure 1',
+            severity: 0.45,
+            quote: 'Figure 1: the setup, again.',
+            category: 'reference',
+            provenance: 'deterministic',
+          }),
+          comment({
+            title: 'Recomputed mismatch',
+            severity: 0.7,
+            category: 'consistency',
+            provenance: 'recompute',
+          }),
+          comment({ title: 'Unbadged finding', severity: 0.3 }),
+        ],
+      }),
+    );
+    // counts exclude deterministic/recompute from Findings
+    expect(md).toContain('## Findings (2)');
+    expect(md).toContain('## Deterministic checks (2)');
+    // deterministic section lists by severity desc, renumbered from 1;
+    // titles carry through, section renders in the header
+    expect(md).toContain('### 1. Recomputed mismatch  — _Section 1_');
+    expect(md).toContain('_[severity 0.70] · [consistency] · [recompute]_');
+    expect(md).toContain('### 2. Duplicate label Figure 1  — _Section 1_');
+    expect(md).toContain('_[severity 0.45] · [reference] · [deterministic]_');
+    // deterministic comments must not leak into Findings
+    const findings = md.slice(
+      md.indexOf('## Findings'),
+      md.indexOf('## Deterministic checks'),
+    );
+    expect(findings).not.toContain('Duplicate label');
+    expect(findings).not.toContain('Recomputed mismatch');
+    // both preambles verbatim (Python render.py)
+    expect(md).toContain(
+      '_Sorted by relevance (severity). Provenance tags show how each finding ' +
+        'was verified: `claim_verify 2-of-2` means it reproduced in two ' +
+        'independent passes; `arbitrated` findings passed a strong-model gate; ' +
+        '`auditor` entries were produced or cross-checked by a second model._',
+    );
+    expect(md).toContain(
+      '_Produced by code, not language models: cross-reference resolution, ' +
+        'number consistency, table arithmetic, formula recomputation ' +
+        '(sympy), and reference resolution against Crossref/OpenAlex._',
+    );
+    // no deterministic section when nothing carries the provenance
+    expect(reportToMarkdown(report())).not.toContain('## Deterministic checks');
   });
 });
