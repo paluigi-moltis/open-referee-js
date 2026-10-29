@@ -5,9 +5,12 @@
  * The citation extractor is a char-parity port: the emitted
  * `- cite :: claim` string must match Python byte-for-byte on identical
  * input (harnessed in tests/bibliography.test.ts against `uv run python`
- * repr constants). The audit is fail-soft like Python: any LLM/parse
- * failure yields the empty audit (Python logs a warning and continues);
- * only a tripped budget cap is surfaced to the caller.
+ * repr constants). The audit is fail-soft where Python is not: Python's
+ * `complete_json` re-raises JSONDecodeError after the repair retry and
+ * `_bibliography` catches only LLMError, so unparseable JSON kills the
+ * Python run — here an LLM/parse failure yields the empty audit instead
+ * (deliberate divergence: a citation audit must never fail a review).
+ * Only a tripped budget cap is surfaced to the caller.
  */
 
 import type { Document } from '../ingestion/document';

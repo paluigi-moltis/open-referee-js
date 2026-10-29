@@ -80,7 +80,7 @@ import { CrossrefClient } from '../literature/crossref';
 import { SearchRouter, type SearchApiKeys } from '../literature/search';
 import { PeerReviewScout } from '../literature/scout';
 import { surveySystem } from './prompts';
-import type { RunState, Stage, StageEvent } from './state';
+import type { RunState, Stage, StageArtifacts, StageEvent } from './state';
 import { createRunState, setStage, stageStatus } from './state';
 
 const MAX_MANUSCRIPT_CHARS = 120_000;
@@ -309,6 +309,9 @@ export async function* runReview(
     }
     settings = resume.settings ?? settings;
     if (resume.providers) providers = resume.providers;
+    // The resumed run re-derives partiality from its own stage outcomes —
+    // an interruption or a pre-abort degradation must not poison it.
+    resume.state.partial = false;
   }
   if (!doc || !settings || !providers) {
     throw new Error('runReview: doc, settings and providers are required');
@@ -324,18 +327,33 @@ export async function* runReview(
    * 'running' forever.
    */
   const pipeline = async function* (): AsyncGenerator<StageEvent, void, undefined> {
+    const savedA = (state.artifacts ?? {}) as Partial<StageArtifacts>;
     const artifacts: Artifacts = {
       claims: [],
       candidates: [],
       overall: '',
       ...(state.artifacts as Partial<Artifacts> | undefined),
     };
+    // draftReview is stored under its own key (Python draft_review); fold it
+    // back into the in-memory meta slots.
+    if (artifacts.overall === '' && savedA.draftReview) {
+      artifacts.overall = savedA.draftReview.overall;
+      artifacts.recommendation = savedA.draftReview.recommendation;
+    }
     state.artifacts = {
       triage: artifacts.triage,
       claims: artifacts.claims,
       survey: artifacts.survey,
+      candidates: artifacts.candidates,
       challenge: artifacts.challenge,
       bibliography: artifacts.bibliography,
+      draftReview:
+        artifacts.overall !== ''
+          ? {
+              overall: artifacts.overall,
+              recommendation: artifacts.recommendation,
+            }
+          : undefined,
     };
     let budgetError: BudgetExceeded | undefined;
     const preset = depthPreset(settings.review);
@@ -374,8 +392,17 @@ export async function* runReview(
         triage: artifacts.triage,
         claims: artifacts.claims,
         survey: artifacts.survey,
+        // Python artifacts['candidates'] / ['draft_review'] parity.
+        candidates: artifacts.candidates,
         challenge: artifacts.challenge,
         bibliography: artifacts.bibliography,
+        draftReview:
+          artifacts.overall !== ''
+            ? {
+                overall: artifacts.overall,
+                recommendation: artifacts.recommendation,
+              }
+            : undefined,
       };
       state.docData = documentToData(doc!);
       await saveRun(state);
@@ -791,6 +818,10 @@ export async function* runReview(
         await saveRun(state);
         yield* emit('verify', 'failed', 'one or more verification workers failed');
       } else {
+        // Persist the verify output (Python artifacts['candidates']) BEFORE
+        // announcing done — a resume must find the candidates or the
+        // challenge would silently re-run over nothing.
+        await syncArtifacts();
         yield* emit('verify', 'done', undefined, {
           unitsDone,
           unitsTotal: Math.max(unitsDone, 1),
@@ -1082,6 +1113,9 @@ export async function* runReview(
         } else {
           artifacts.overall = '';
         }
+        // Persist the draft review (Python artifacts['draft_review']) BEFORE
+        // announcing done — a resume after meta must not lose the verdict.
+        await syncArtifacts();
         yield* emit('meta', 'done');
       } else if (metaRes.kind === 'budget') {
         budgetError = metaRes.error;

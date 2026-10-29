@@ -36,8 +36,12 @@ export type StageArtifacts = {
   triage?: Record<string, unknown>;
   claims?: Record<string, unknown>[];
   survey?: unknown;
+  /** verify-stage output (per-claim workers + lenses), pre-challenger. */
+  candidates?: unknown[];
   challenge?: unknown[];
   bibliography?: unknown;
+  /** meta output: overall_feedback + recommendation (Python draft_review). */
+  draftReview?: { overall: string; recommendation?: string };
 };
 
 export interface RunState {
@@ -152,12 +156,20 @@ function stageHasArtifact(a: StageArtifacts, stage: Stage): boolean {
       return a.claims !== undefined;
     case 'survey':
       return a.survey !== undefined;
+    case 'verify':
+      // Candidates are the verify output (Python artifacts['candidates']):
+      // a done verify without them would resume into an empty challenge.
+      return a.candidates !== undefined;
     case 'challenge':
       return a.challenge !== undefined;
     case 'bibliography':
       return a.bibliography !== undefined;
+    case 'meta':
+      // Draft review (overall/recommendation) is the meta output
+      // (Python artifacts['draft_review']).
+      return a.draftReview !== undefined;
     default:
-      // verify/scout/meta/validate persist no artifact: done means done.
+      // scout/validate persist no artifact: done means done.
       return true;
   }
 }

@@ -465,9 +465,9 @@ export function reportView(
           'show in manuscript →',
         );
         anchorBtn.addEventListener('click', () => {
+          // scrollToBlock already scrolls + flash-highlights the block.
           scrollToBlock(c.blockId!);
           const blockEl = document.getElementById(`block-${c.blockId}`);
-          blockEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
           const backLink = document.getElementById(back);
           // "back": a small floating link near the block returns to the comment
           if (blockEl && backLink) {

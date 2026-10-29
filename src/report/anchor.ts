@@ -26,7 +26,28 @@ function roundHalfEven2(p: number, q: number): number {
  * Fuzzy-resolve a comment to a block. Mirrors Python `_resolve_anchor`:
  * unique anchor hit -> 1.0, multi hit -> 0.7, quote hit -> 0.6, then a
  * token-overlap Jaccard fallback (> 0.35) on the anchor; else no block.
+ *
+ * Block token sets are memoized per document (WeakMap) — the fallback
+ * re-normalizing every block per comment is O(comments × blocks) on the
+ * main thread otherwise.
  */
+const normCache = new WeakMap<Document, string[]>();
+
+function blockNorm(doc: Document, index: number, text: string): string {
+  let cached = normCache.get(doc);
+  if (cached === undefined) {
+    cached = new Array(doc.blocks.length);
+    normCache.set(doc, cached);
+  }
+  // Only the block at `index` can be uncached on a second pass; fill lazily.
+  let out = cached[index];
+  if (out === undefined) {
+    out = norm(text);
+    cached[index] = out;
+  }
+  return out;
+}
+
 export function resolveAnchor(
   doc: Document,
   anchor: string,
@@ -46,8 +67,11 @@ export function resolveAnchor(
     const aTokens = new Set(norm(anchor).split(' '));
     let best: { id: string } | null = null;
     let bestJ = 0.0;
-    for (const b of doc.blocks) {
-      const tokens = new Set(norm(b.text).split(' '));
+    let bestInter = 0;
+    let bestUnion = 1;
+    for (let i = 0; i < doc.blocks.length; i++) {
+      const b = doc.blocks[i]!;
+      const tokens = new Set(blockNorm(doc, i, b.text).split(' '));
       if (tokens.size === 0) continue;
       let inter = 0;
       for (const t of aTokens) if (tokens.has(t)) inter++;
@@ -56,12 +80,16 @@ export function resolveAnchor(
       if (j > bestJ) {
         best = { id: b.id };
         bestJ = j;
+        bestInter = inter;
+        bestUnion = union;
       }
     }
     if (best !== null && bestJ > 0.35) {
+      // Python round(best_j, 2) is banker's rounding on the exact fraction —
+      // pre-rounding with Math.round breaks exact halves (1/8 -> 0.13 vs 0.12).
       return {
         blockId: best.id,
-        confidence: roundHalfEven2(Math.round(bestJ * 100), 100),
+        confidence: roundHalfEven2(bestInter, bestUnion),
       };
     }
   }

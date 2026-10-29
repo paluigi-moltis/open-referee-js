@@ -159,6 +159,7 @@ blockquote {
   #file-name,
   #run-btn,
   #download-md,
+  h1,
   .anchor-link,
   .anchor-back {
     display: none !important;

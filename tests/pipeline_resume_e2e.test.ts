@@ -74,6 +74,17 @@ function makeSettings(partial: Partial<AppSettings> = {}): AppSettings {
   };
 }
 
+/** Full depth preset (all passes on) for tests that exercise the gate. */
+function makeSettingsFull(): AppSettings {
+  return makeSettings({
+    review: {
+      perSectionLenses: true,
+      wholePaperPasses: true,
+      defenseRound: true,
+    },
+  });
+}
+
 /** Scriptable provider that records every completed call. */
 class ScriptedProvider implements ChatProvider {
   readonly calls: { messages: ChatMessage[]; spec: ModelSpec }[] = [];
@@ -154,6 +165,9 @@ describe('firstOpenStage (resume re-entry point)', () => {
         triage: { summary: 's' },
         claims: [],
         survey: { paperTitle: 'P', items: [], bibChecks: [], userDocs: [] },
+        // verify is done WITH its artifact (candidates persisted since the
+        // Stage-6 review fixes) — so the re-entry point is challenge.
+        candidates: [],
       },
     } as unknown as RunState;
     // challenge is done but its artifact is absent -> re-enter there
@@ -289,6 +303,211 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
     const report = state.report as import('../src/report/models').ReviewReport;
     expect(report.overall).toBe('resumed report');
     expect(state.partial).toBe(false);
+  });
+
+  it('resume after verify: candidates artifact restored, challenge sees them (no silent loss)', async () => {
+    // Interrupt right after verify announces the next stage: verify's
+    // artifact sync has completed, so resume must find `candidates` —
+    // the verifier finding must survive into the challenge + report.
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({
+        mathematical_density: 'none',
+        statistical_content: 'none',
+        methodological_style: 'formal',
+        summary: 's',
+      }),
+      j({
+        claims: [
+          {
+            id: 'cl001',
+            type: 'logical',
+            importance: 'central',
+            components: { statement: 's' },
+            anchor: 'bootstrap with 999 replications',
+            section: 'Methods',
+          },
+        ],
+      }),
+      // claim worker returns a REAL comment — this is the finding that
+      // must not vanish on resume
+      j({
+        comments: [
+          {
+            title: 'Bootstrap assumption unstated',
+            message: 'The theorem needs finite second moments, stated nowhere.',
+            score: 0.7,
+            category: 'logical',
+            claim_id: 'cl001',
+            paragraph_anchor: 'bootstrap with 999 replications',
+          },
+        ],
+      }),
+      // whole-paper verifier (wholePaperPasses on): no extra findings
+      j({ comments: [] }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      // lenses: 'none' density/stats + 'formal' style -> prose + lit only
+      // (no math/empirical), 2 lenses x 2 sections = 4 responses
+      j({ comments: [] }),
+      j({ comments: [] }),
+      j({ comments: [] }),
+      j({ comments: [] }),
+    );
+    const gen = runReview({
+      doc: makeDoc(),
+      settings: makeSettingsFull(),
+      providers: { strong, small },
+    });
+    const events: StageEvent[] = [];
+    for (;;) {
+      const next = await gen.next();
+      if (next.done) break;
+      events.push(next.value);
+      if (next.value.stage === 'challenge' && next.value.status === 'running') {
+        await gen.return(undefined as unknown as RunState);
+        break;
+      }
+    }
+    expect(events.some((e) => e.stage === 'verify' && e.status === 'done')).toBe(true);
+
+    const runs = await listRuns();
+    const saved = runs.find((r) => r.stages['verify'] === 'done');
+    expect(saved).toBeDefined();
+    const resumeState = await loadRun(saved!.runId);
+    expect(resumeState).toBeDefined();
+
+    // Resume: challenge RE-RUNS (it was mid-flight) — the candidate must be
+    // in its prompt. Then the defense gate (small defends, strong
+    // adjudicates), bibliography (small), meta + validate (strong).
+    const strong2 = new ScriptedProvider();
+    strong2.queue(
+      // section challengers: Introduction gets NO candidates (the anchor is
+      // in Methods); Methods upholds the restored candidate — challenger
+      // `validated` entries are full comment dicts keyed by paragraph_anchor
+      j({ validated: [], new_comments: [] }),
+      j({
+        validated: [
+          { verdict: 'kept', paragraph_anchor: 'bootstrap with 999 replications' },
+        ],
+        new_comments: [],
+      }),
+      // whole-paper challenger over unclaimed anchors: none
+      j({ validated: [], new_comments: [] }),
+      // defense gate adjudication for the 1 restored candidate
+      j({ verdict: 'upheld' }),
+      // meta
+      j({ overall_feedback: 'survived resume', recommendation: 'accept' }),
+      // validator
+      j({ validated: [0], rejected: [] }),
+    );
+    const small2 = new ScriptedProvider();
+    small2.queue(
+      j({ defense: 'stated in the appendix', defense_strength: 'weak' }),
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+    );
+    const { state } = await drain(
+      runReview({
+        doc: makeDoc(),
+        settings: makeSettingsFull(),
+        providers: { strong: strong2, small: small2 },
+        resume: { state: resumeState! },
+      }),
+    );
+    // challenge consumed the RESTORED candidate: its prompt names the finding
+    // (candidates are ReviewComment-shaped — the finding text is `comment`)
+    const challengeCalls = strong2.calls.slice(0, 3);
+    expect(
+      challengeCalls.some((c) =>
+        c.messages[1]!.content.includes(
+          'The theorem needs finite second moments, stated nowhere.',
+        ),
+      ),
+    ).toBe(true);
+    expect(strong2.calls).toHaveLength(6); // 3 challenge + defense + meta + validate
+    expect(small2.calls).toHaveLength(2); // defense + bibliography
+    expect(state.stages['assemble']).toBe('done');
+    const report = state.report as import('../src/report/models').ReviewReport;
+    expect(report.comments.map((c) => c.comment)).toContain(
+      'The theorem needs finite second moments, stated nowhere.',
+    );
+    expect(state.partial).toBe(false);
+  });
+
+  it('resume after meta: draft review restored, validate sees the real overall', async () => {
+    // Interrupt when validate announces itself: meta is done + persisted.
+    // Resume must NOT lose the meta output (Python draft_review parity).
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({
+        mathematical_density: 'none',
+        statistical_content: 'none',
+        methodological_style: 'formal',
+        summary: 's',
+      }),
+      j({ claims: [] }),
+      // challengers: 2 sections + whole-paper (lenses/whole-paper/gate all off)
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      // meta (validate never reached — that's the interruption point)
+      j({ overall_feedback: 'THE META VERDICT', recommendation: 'minor revision' }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      // bibliography (a real entry so the stage counts as done)
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+    );
+    const gen = runReview({
+      doc: makeDoc(),
+      settings: makeSettings(),
+      providers: { strong, small },
+    });
+    for (;;) {
+      const next = await gen.next();
+      if (next.done) break;
+      if (next.value.stage === 'validate' && next.value.status === 'running') {
+        await gen.return(undefined as unknown as RunState);
+        break;
+      }
+    }
+
+    const runs = await listRuns();
+    const saved = runs.find((r) => r.stages['meta'] === 'done');
+    expect(saved).toBeDefined();
+    const resumeState = await loadRun(saved!.runId);
+
+    const strong2 = new ScriptedProvider();
+    strong2.queue(
+      // ONLY the validator runs (meta skipped: draft restored, no re-call)
+      j({ validated: [0], rejected: [] }),
+    );
+    const small2 = new ScriptedProvider();
+    const { state } = await drain(
+      runReview({
+        doc: makeDoc(),
+        settings: makeSettings(),
+        providers: { strong: strong2, small: small2 },
+        resume: { state: resumeState! },
+      }),
+    );
+    expect(strong2.calls).toHaveLength(1); // validator only — meta NOT re-called
+    expect(small2.calls).toHaveLength(0);
+    const report = state.report as import('../src/report/models').ReviewReport;
+    expect(report.overall).toBe('THE META VERDICT');
+    // NB: partial is true here — the claimless fixture marks the claims stage
+    // 'failed or produced no claims' in BOTH attempts (asserted above).
   });
 });
 
