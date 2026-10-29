@@ -27,7 +27,12 @@ import type { ChatMessage, ChatProvider, ModelSpec } from '../providers/base';
 import { LLMError } from '../providers/base';
 import { BudgetExceeded, UsageLedger } from '../providers/usage';
 import { appendEvent, saveRun } from '../runs/store';
-import type { ReviewComment, ReviewReport, UsageSummary } from '../report/models';
+import type {
+  CopyeditItem,
+  ReviewComment,
+  ReviewReport,
+  UsageSummary,
+} from '../report/models';
 import {
   challengerPrompt,
   challengerSystem,
@@ -77,6 +82,13 @@ import {
 } from '../literature/types';
 import { OpenAlexClient } from '../literature/openalex';
 import { CrossrefClient } from '../literature/crossref';
+import {
+  renderResolutions,
+  resolveReferences,
+  type ResolutionClients,
+  type ResolutionRecord,
+} from '../literature/reference_resolution';
+import { runCopyEditStage } from './copyedit';
 import { SearchRouter, type SearchApiKeys } from '../literature/search';
 import { PeerReviewScout } from '../literature/scout';
 import { surveySystem } from './prompts';
@@ -146,6 +158,8 @@ interface Artifacts {
   /** meta-review markdown */
   overall: string;
   recommendation?: string;
+  /** copyedit-stage output: sanitized language-mechanics items. */
+  copyeditItems?: CopyeditItem[];
 }
 
 /**
@@ -354,6 +368,7 @@ export async function* runReview(
               recommendation: artifacts.recommendation,
             }
           : undefined,
+      copyeditItems: artifacts.copyeditItems,
     };
     let budgetError: BudgetExceeded | undefined;
     const preset = depthPreset(settings.review);
@@ -403,6 +418,7 @@ export async function* runReview(
                 recommendation: artifacts.recommendation,
               }
             : undefined,
+        copyeditItems: artifacts.copyeditItems,
       };
       state.docData = documentToData(doc!);
       await saveRun(state);
@@ -424,7 +440,9 @@ export async function* runReview(
                 ? a.challenge !== undefined
                 : stage === 'bibliography'
                   ? a.bibliography !== undefined
-                  : true);
+                  : stage === 'copyedit'
+                    ? a.copyeditItems !== undefined
+                    : true);
       return (
         doneWithArtifact ||
         (stageStatus(state, stage) === 'skipped' && state.report !== undefined)
@@ -1035,14 +1053,65 @@ export async function* runReview(
 
     // --------------------------------------------------- 4b. bibliography --
     // Python `_bibliography`: SMALL citation audit against the context pack;
-    // fail-soft (empty audit on LLM error), budget surfaces.
+    // fail-soft (empty audit on LLM error), budget surfaces. Python also
+    // runs `_resolve_references` first: a deterministic Crossref/OpenAlex
+    // pass whose records are memoized on RunState (`doi_resolutions`,
+    // persisted BEFORE the audit), rendered into the new {resolution} prompt
+    // slot, and whose unmatched entries (first 20) become deterministic
+    // checker findings on RunState (NOT report comments — 7b wires those).
     if (!budgetError && !skipIfDone('bibliography')) {
       yield* emit('bibliography', 'running');
+      if (!state.doiResolutions) {
+        // Fail-soft (Python catches everything): resolution errors -> no
+        // records -> '(resolution unavailable)'.
+        let records: ResolutionRecord[] = [];
+        try {
+          const clients: ResolutionClients = {
+            crossref: new CrossrefClient(),
+            openalex: new OpenAlexClient(),
+          };
+          records = await resolveReferences(doc.referencesText ?? '', clients);
+        } catch (err) {
+          console.warn(
+            `reference resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          records = [];
+        }
+        state.doiResolutions = records;
+        // Persist BEFORE the bibliography audit (Python saves state first).
+        await saveRun(state);
+        // Unmatched records become deterministic checker findings (Python
+        // `_resolve_references` finding loop, exact wording).
+        const unmatched = records.filter((r) => r.status !== 'matched');
+        if (unmatched.length > 0) {
+          const findings = state.checkerFindings ?? [];
+          for (const r of unmatched.slice(0, 20)) {
+            findings.push({
+              check: 'doi-resolution',
+              title: 'Reference not resolvable in Crossref/OpenAlex',
+              message:
+                'The bibliography entry below could not be matched to ' +
+                'any Crossref or OpenAlex record (best score ' +
+                `${r.score ?? 0}). It may be phantom, garbled, or ` +
+                'use an unusual rendering — verify it exists.',
+              quote: String(r.ref ?? '').slice(0, 240),
+              category: 'reference',
+              severity: 0.4,
+              meta: { kind: 'unmatched', score: r.score ?? 0 },
+              provenance: 'deterministic',
+            });
+          }
+          state.checkerFindings = findings;
+        }
+      }
       const bibJson: CallJson = (role, system, user) => callJson(role, system, user);
       const bibRun = await runBibliographyAudit({
         callJson: bibJson,
         doc,
         pack: artifacts.survey ?? newContextPack(doc.title),
+        resolution: renderResolutions(
+          (state.doiResolutions ?? []) as ResolutionRecord[],
+        ),
         settings,
       });
       if (bibRun.budget) budgetError = bibRun.budget;
@@ -1176,6 +1245,39 @@ export async function* runReview(
       yield* emit('validate', 'skipped', 'no candidates to validate');
     }
 
+    // ------------------------------------------------------------ 6b. copyedit --
+    // Python 9b `_copyedit`: one SMALL language-mechanics pass; fail-soft ->
+    // [] on any LLM/parse failure, budget propagates. The artifact persists
+    // BEFORE the done-emit so resume skips the re-call. Divergence (7c):
+    // Python's plan_knobs().copyedit + budget_allows('copyedit') gates are
+    // absent pre-7c — the stage is always-on here.
+    if (!budgetError && !skipIfDone('copyedit')) {
+      yield* emit('copyedit', 'running');
+      const copyJson: CallJson = (role, system, user) => callJson(role, system, user);
+      const copyRun = await runCopyEditStage({
+        callJson: copyJson,
+        doc,
+        manuscript,
+      });
+      if (copyRun.budget) budgetError = copyRun.budget;
+      // Persist the artifact (Python artifacts['copyedit_items']) BEFORE the
+      // terminal event — resume must find it or the annex re-calls.
+      artifacts.copyeditItems = copyRun.items;
+      await syncArtifacts();
+      if (copyRun.budget) {
+        yield* emit(
+          'copyedit',
+          'failed',
+          `budget cap reached: ${copyRun.budget.message}`,
+        );
+      } else if (copyRun.items.length === 0) {
+        // LLM failure or genuinely nothing to fix: never blocks the report.
+        yield* emit('copyedit', 'done', 'no copyedit items');
+      } else {
+        yield* emit('copyedit', 'done', `${copyRun.items.length} language fixes`);
+      }
+    }
+
     // ---------------------------------------------------------- 7. assemble --
     if (budgetError) {
       // Mark the never-started stages skipped so the state machine is explicit.
@@ -1189,6 +1291,7 @@ export async function* runReview(
         'bibliography',
         'meta',
         'validate',
+        'copyedit',
       ];
       for (const stage of order) {
         if (stageStatus(state, stage) === 'pending') {
@@ -1237,6 +1340,7 @@ export async function* runReview(
       recommendation,
       overall: artifacts.overall || '_(no meta-review produced)_',
       comments: anchored,
+      copyeditItems: artifacts.copyeditItems,
       usage,
       partial: state.partial || budgetError !== undefined,
       generatedAt: new Date().toISOString(),
@@ -1267,6 +1371,7 @@ export async function* runReview(
         'bibliography',
         'meta',
         'validate',
+        'copyedit',
         'assemble',
       ] as Stage[]
     ).find((s) => stageStatus(state, s) === 'running');

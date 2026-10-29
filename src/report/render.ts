@@ -41,6 +41,26 @@ export function reportToMarkdown(report: ReviewReport): string {
     }
     parts.push('', c.comment, '');
   }
+  // Python order: findings -> validator notes -> copyedit table -> usage.
+  if (report.copyeditItems && report.copyeditItems.length > 0) {
+    parts.push(
+      `## Suggested language fixes (${report.copyeditItems.length})`,
+      '',
+      '_Mechanical language items from the copyedit pass — typos, grammar, ' +
+        'phrasing, terminology. Each quote is verified to appear in the ' +
+        'manuscript; these are copyedits, not findings, and carry no ' +
+        'severity._',
+      '',
+      '| # | Kind | Location | Original | Suggested fix |',
+      '| --- | --- | --- | --- | --- |',
+    );
+    for (const [i, it] of report.copyeditItems.entries()) {
+      const q = it.quote.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+      const s = it.suggestion.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+      parts.push(`| ${i + 1} | ${it.kind} | ${it.section || '—'} | ${q} | ${s} |`);
+    }
+    parts.push('');
+  }
   const u = report.usage;
   if (u.estimatedCostUsd || u.totalPromptTokens) {
     parts.push(

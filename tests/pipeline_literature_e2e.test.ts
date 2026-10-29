@@ -155,6 +155,8 @@ describe('literature stage wiring (runReview survey + scout)', () => {
           },
         ],
       }),
+
+      j({ items: [] }), // copyedit annex
     );
     const fetchStub = stubFetch((url) => {
       if (url.includes('api.openalex.org')) {
@@ -234,6 +236,7 @@ describe('literature stage wiring (runReview survey + scout)', () => {
     const small = new ScriptedProvider();
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({ items: [] }), // copyedit annex
     );
     const fetchStub = stubFetch(() => null); // every request = CORS TypeError
     try {
@@ -270,7 +273,10 @@ describe('literature stage wiring (runReview survey + scout)', () => {
       j({ overall_feedback: 'ok' }),
     );
     const small = new ScriptedProvider();
-    small.queue(new LLMError('small provider down'));
+    small.queue(
+      new LLMError('small provider down'),
+      j({ items: [] }), // copyedit annex (runs even after survey failed)
+    );
     const fetchStub = stubFetch(() => ({ ok: true, json: { results: [] } }));
     try {
       const { state, events } = await drain(
@@ -306,6 +312,7 @@ describe('literature stage wiring (runReview survey + scout)', () => {
     const small = new ScriptedProvider();
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({ items: [] }), // copyedit annex
     );
     const fetchStub = stubFetch((url) =>
       url.includes('api.openalex.org')

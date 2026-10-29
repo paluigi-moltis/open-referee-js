@@ -201,8 +201,18 @@ describe('runReview happy path', () => {
             category: 'statistical',
           },
         ],
+      }), // numerical claim -> small role
+      // copyedit annex (SMALL, after validate): one verbatim fix
+      j({
+        items: [
+          {
+            quote: 'bootstrap with 999 replications',
+            suggestion: 'bootstrap with 1,000 replications',
+            kind: 'Grammar',
+          },
+        ],
       }),
-    ); // numerical claim -> small role
+    );
     const settings = makeSettings();
 
     const progressCalls: (StageProgress | undefined)[] = [];
@@ -227,6 +237,7 @@ describe('runReview happy path', () => {
       'bibliography',
       'meta',
       'validate',
+      'copyedit',
       'assemble',
     ]);
 
@@ -260,10 +271,20 @@ describe('runReview happy path', () => {
     expect(strong.calls[0]!.spec.model).toBe('m-strong');
     expect(strong.calls[0]!.spec.temperature).toBe(0.2);
     expect(strong.calls[0]!.spec.maxTokens).toBe(4096);
-    // small role: surveyor + the numerical claim worker
-    expect(small.calls).toHaveLength(2);
+    // small role: surveyor + the numerical claim worker + copyedit annex
+    expect(small.calls).toHaveLength(3);
     expect(small.calls[0]!.messages[0]!.content).toBe(surveySystem);
     expect(small.calls[1]!.messages[1]!.content).toContain('[cl002]');
+
+    // copyedit items flow into the report annex
+    expect(report.copyeditItems).toEqual([
+      {
+        quote: 'bootstrap with 999 replications',
+        suggestion: 'bootstrap with 1,000 replications',
+        kind: 'grammar',
+        section: 'Methods',
+      },
+    ]);
 
     // verify progress carries unitsDone/unitsTotal per claim
     const progress = progressCalls.filter((p) => p !== undefined);
@@ -351,6 +372,8 @@ describe('runReview validator filtering', () => {
     // surveyor (SMALL role since Stage 5)
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      // copyedit annex
+      j({ items: [] }),
     );
     const { state } = await drain(
       runReview({
@@ -423,6 +446,8 @@ describe('runReview validator filtering', () => {
       j({ defense: 'it is fine', defense_strength: 'strong' }),
       j({ defense: 'overstated', defense_strength: 'weak' }),
       j({ defense: 'no case', defense_strength: 'none' }),
+      // copyedit annex
+      j({ items: [] }),
     );
     const { state, events } = await drain(
       runReview({
@@ -469,10 +494,10 @@ describe('runReview validator filtering', () => {
       'keep me',
     ]);
     expect(report.comments[0]!.severity).toBe(0.4);
-    // defense on small (3 calls) + the surveyor = 4; adjudication on strong.
-    // The surveyor runs first (survey stage), then the defense gate at the
-    // challenge tail.
-    expect(small.calls).toHaveLength(4);
+    // defense on small (3 calls) + the surveyor + copyedit = 5; adjudication
+    // on strong. The surveyor runs first (survey stage), then the defense
+    // gate at the challenge tail, copyedit after validate.
+    expect(small.calls).toHaveLength(5);
     expect(small.calls[0]!.messages[0]!.content).toBe(surveySystem);
     expect(small.calls[1]!.messages[0]!.content).toContain("AUTHORS' DEFENSE COUNSEL");
   });
@@ -496,6 +521,7 @@ describe('runReview malformed JSON', () => {
     const small = new ScriptedProvider();
     small.queue(
       'survey {{{ nope', // surveyor (SMALL): garbage -> survey failed
+      j({ items: [] }), // copyedit annex (runs regardless; never blocks)
     );
     const settings = makeSettings();
     const { state, events } = await drain(
@@ -551,6 +577,7 @@ describe('runReview malformed JSON', () => {
     const small = new ScriptedProvider();
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({ items: [] }), // copyedit annex
     );
     const { state } = await drain(
       runReview({
@@ -626,6 +653,7 @@ describe('runReview depth preset wiring', () => {
     const small0 = new ScriptedProvider();
     small0.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({ items: [] }), // copyedit annex
     );
     await drain(
       runReview({
@@ -656,6 +684,7 @@ describe('runReview depth preset wiring', () => {
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
     );
     for (let i = 0; i < 6; i++) small2.queue(j({ comments: [] }));
+    small2.queue(j({ items: [] })); // copyedit annex
     await drain(
       runReview({
         doc: makeDoc(),
@@ -665,7 +694,7 @@ describe('runReview depth preset wiring', () => {
         providers: { strong: strong2, small: small2 },
       }),
     );
-    expect(small2.calls).toHaveLength(7);
+    expect(small2.calls).toHaveLength(8);
     // lens order: lens-outer loop -> 2 sections per lens: prose, prose,
     // empirical, empirical, lit, lit; calls[0] is the surveyor (survey
     // stage precedes verify).

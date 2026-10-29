@@ -96,6 +96,44 @@ describe('reportToMarkdown', () => {
     expect(reportToMarkdown(report())).not.toContain('PARTIAL REPORT');
   });
 
+  it('renders the copyedit annex exactly as Python render.py', () => {
+    const md = reportToMarkdown(
+      report({
+        copyeditItems: [
+          {
+            quote: 'bootstrap with 999 replications',
+            suggestion: 'bootstrap with 1,000 replications',
+            kind: 'grammar',
+            section: 'Methods',
+          },
+          {
+            quote: 'pipe | and\nnewline',
+            suggestion: 'cleaned',
+            kind: 'typo',
+            section: null,
+          },
+        ],
+      }),
+    );
+    expect(md).toContain('## Suggested language fixes (2)');
+    expect(md).toContain(
+      '_Mechanical language items from the copyedit pass — typos, grammar, ' +
+        'phrasing, terminology. Each quote is verified to appear in the ' +
+        'manuscript; these are copyedits, not findings, and carry no ' +
+        'severity._',
+    );
+    expect(md).toContain('| # | Kind | Location | Original | Suggested fix |');
+    expect(md).toContain('| --- | --- | --- | --- | --- |');
+    expect(md).toContain(
+      '| 1 | grammar | Methods | bootstrap with 999 replications | ' +
+        'bootstrap with 1,000 replications |',
+    );
+    // pipe and newline escaped in cells; null section falls back to '—'
+    expect(md).toContain('| 2 | typo | — | pipe \\| and newline | cleaned |');
+    // no section when there are no items
+    expect(reportToMarkdown(report())).not.toContain('Suggested language fixes');
+  });
+
   it('falls back to _(none)_ for empty overall text', () => {
     expect(reportToMarkdown(report({ overall: '' }))).toContain('_(none)_');
   });

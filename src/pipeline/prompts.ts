@@ -363,6 +363,7 @@ ${candidatesJson}`;
 export function bibliographyPrompt(
   references: string,
   intext: string,
+  resolution: string,
   context: string,
 ): string {
   return `Bibliography section (raw):
@@ -375,10 +376,42 @@ In-text citation mentions found in the manuscript (claim context may be truncate
 ${intext}
 ---
 
+Deterministic DOI resolution (Crossref/OpenAlex ground truth; MATCHED records
+name the real work behind an entry — an entry you would call not_found despite
+a MATCH here is mis-parsed, not phantom; UNMATCHED entries found no record and
+are the phantom candidates):
+---
+${resolution}
+---
+
 Context pack:
 ---
 ${context}
 ---`;
+}
+
+// ---------------------------------------------------------------- copyedit --
+
+export const copyeditSystem = `You are a meticulous copyeditor, not a referee. You receive a manuscript and list ONLY language-mechanics problems: typos, misspellings, grammar errors, awkward or ambiguous phrasing, and inconsistent terminology (the same concept called two different names in different places).
+
+Rules:
+- Every item must quote a span of the manuscript VERBATIM (<= 30 words, copied exactly — the quote will be mechanically located in the document; paraphrased quotes are useless).
+- Provide a concrete suggested fix (the corrected or reworked phrase), not a description of the problem.
+- kind is one of: typo | grammar | phrasing | terminology.
+- At most 40 items, most useful first. Skip borderline cases; never pad.
+- Do NOT comment on substance, mathematics, citations, structure, tone, or length — language mechanics only.
+
+Return STRICT JSON: {"items": [{"quote": "...", "suggestion": "...", "kind": "typo|grammar|phrasing|terminology"}]}`;
+
+export function copyeditPrompt(title: string, manuscript: string): string {
+  return `Manuscript title: ${title}
+
+Manuscript (may be truncated):
+----
+${manuscript}
+----
+
+List the language-mechanics fixes now. JSON only.`;
 }
 
 export function metaPrompt(

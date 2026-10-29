@@ -17,6 +17,7 @@ const STAGE_LABELS: Record<Stage, string> = {
   bibliography: 'Citation audit',
   meta: 'Meta-review',
   validate: 'Validate comments',
+  copyedit: 'Language fixes',
   assemble: 'Assemble report',
 };
 
@@ -30,6 +31,7 @@ const STAGE_ORDER: Stage[] = [
   'bibliography',
   'meta',
   'validate',
+  'copyedit',
   'assemble',
 ];
 

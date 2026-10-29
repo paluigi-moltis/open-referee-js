@@ -161,7 +161,7 @@ describe('user-prompt builders substitute every placeholder', () => {
       wholePaperVerifierPrompt('T', 'M'),
       wholePaperChallengerPrompt('T', 'M', '[]'),
       challengerPrompt('S', 'C', 'X', '[]'),
-      bibliographyPrompt('R', 'I', 'P'),
+      bibliographyPrompt('R', 'I', 'RES', 'P'),
       metaPrompt('T', '{}', '[]', 'B', 'N'),
       validatorPrompt('T', 'M', '[]', 'O'),
       figurePrompt('T', 3, 'C'),
