@@ -89,6 +89,8 @@ import {
   type ResolutionRecord,
 } from '../literature/reference_resolution';
 import { runCopyEditStage } from './copyedit';
+import { findingToDict, runDeterministicChecks } from './checkers';
+import { extractTables, extractTheorems } from '../ingestion/artifacts';
 import { SearchRouter, type SearchApiKeys } from '../literature/search';
 import { PeerReviewScout } from '../literature/scout';
 import { surveySystem } from './prompts';
@@ -248,6 +250,38 @@ function normalizeWorkerComments(
   return out;
 }
 
+/**
+ * Python `_checker_comments`: deterministic checker findings as candidate
+ * comments with provenance kept — mechanical findings skip the author-defense
+ * gate. Severity clamped to [0.1, 0.95]; title/message/quote truncated.
+ */
+export function checkerComments(state: RunState): ReviewComment[] {
+  const out: ReviewComment[] = [];
+  for (const f of state.checkerFindings ?? []) {
+    let sev = 0.5;
+    const raw = f['severity'];
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      sev = Math.min(0.95, Math.max(0.1, raw));
+    } else if (typeof raw === 'string' && raw.trim() !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) sev = Math.min(0.95, Math.max(0.1, parsed));
+    }
+    const quote = String(f['quote'] ?? '');
+    out.push({
+      section: '',
+      quote: quote.slice(0, 240),
+      comment: String(f['message'] ?? '').slice(0, 2500),
+      severity: sev,
+      paragraphAnchor: quote.slice(0, 400),
+      category: String(f['category'] ?? 'consistency'),
+      provenance:
+        typeof f['provenance'] === 'string' ? f['provenance'] : 'deterministic',
+      title: String(f['title'] ?? 'Finding').slice(0, 160),
+    });
+  }
+  return out;
+}
+
 /** Map a challenger validated/new_comments entry to a ReviewComment. */
 function challengerComment(
   o: Record<string, unknown>,
@@ -374,6 +408,15 @@ export async function* runReview(
     const preset = depthPreset(settings.review);
     /** challenge-stage output (validated + new_comments), feeding meta. */
     const challengeValidated: ReviewComment[] = artifacts.challenge ?? [];
+
+    // Python run() step 1 (post-ingest): extract theorem environments and
+    // markdown-table artifacts — deterministic, free, and required by the
+    // 7b checkers (xref definitions come from doc.theorems; table arithmetic
+    // reads doc.tables). Python appends extract_tables AFTER reader tables;
+    // match that order and only fill when absent (a resume re-entering with
+    // a persisted docData snapshot must not duplicate artifacts).
+    if (doc.theorems.length === 0) doc.theorems = extractTheorems(doc);
+    if (doc.tables.length === 0) doc.tables = extractTables(doc);
 
     const spec = (role: Role): ModelSpec => {
       const rc = settings.roles[role];
@@ -725,6 +768,31 @@ export async function* runReview(
       yield* emit('verify', 'running');
       let unitsDone = 0;
       let stageBroken = false;
+
+      // 3-pre. deterministic checkers: cross-references, number consistency,
+      // table arithmetic — zero LLM cost, findings stored on the run state.
+      // Python coupling: the gate is `if not self.state.checker_findings` —
+      // the doi-resolution findings (bibliography) share the same array, so a
+      // run that already has them skips this scan and vice versa.
+      if ((state.checkerFindings ?? []).length === 0) {
+        const det = runDeterministicChecks(doc);
+        state.checkerFindings = det.map(findingToDict);
+        // Persist BEFORE the verify stage completes (established pattern).
+        await saveRun(state);
+        if (det.length > 0) {
+          const kinds = new Map<string, number>();
+          for (const f of det) kinds.set(f.check, (kinds.get(f.check) ?? 0) + 1);
+          yield* emit(
+            'verify',
+            'running',
+            'deterministic checks: ' +
+              [...kinds.entries()]
+                .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+                .map(([k, v]) => `${k}×${v}`)
+                .join(', '),
+          );
+        }
+      }
 
       // 3a. per-claim verification workers
       if (artifacts.claims.length > 0) {
@@ -1320,9 +1388,14 @@ export async function* runReview(
       totalCompletionTokens: totals.completion,
     };
 
-    // Python `_assemble`: resolve each comment to a manuscript block and
-    // stamp ids + section titles from the block's section path.
-    const anchored: ReviewComment[] = validated.map((c, i) => {
+    // Python `_assemble`: deterministic checker findings bypass the LLM gates
+    // entirely — code-verified, already distinct, provenance kept — and JOIN
+    // the validated comments (before them, Python `list(self._checker_comments()) + ...`).
+    // They are NOT report comments through meta/validate (Python keeps them
+    // out of meta's merge to avoid the RMI dedup collapse) but become
+    // anchored report comments here.
+    const finalComments: ReviewComment[] = [...checkerComments(state), ...validated];
+    const anchored: ReviewComment[] = finalComments.map((c, i) => {
       const anchor = c.paragraphAnchor ?? '';
       const quote = c.quote ?? '';
       const { blockId, confidence } = resolveAnchor(doc, anchor, quote);
