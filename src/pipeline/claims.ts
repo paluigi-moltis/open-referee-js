@@ -238,18 +238,34 @@ export async function verifyClaims(init: {
   settings: AppSettings;
   /** Resolved plan-knob claim cap (Python knobs.max_claims); preset fallback. */
   maxClaims?: number;
+  /**
+   * Python `_claims_ranked` (7e review B2): when the committee's decision
+   * model already ranked the claims, the given order is authoritative — the
+   * coarse importance sort is skipped (Python verify_claims).
+   */
+  claimsRanked?: boolean;
   onEvent?: ClaimProgress;
   /** A worker failing (LLMError/invalid JSON even after repair) marks the verify stage partial. */
   onWorkerError?: () => void;
 }): Promise<{ comments: ReviewComment[]; budget?: BudgetExceeded }> {
   const { callJson, doc, claims, settings, onEvent, onWorkerError } = init;
   const preset = depthPreset(settings.review);
-  const order: Record<string, number> = { central: 0, supporting: 1, peripheral: 2 };
-  const ordered = [...claims].sort(
-    (a, b) =>
-      (order[String(a['importance']).toLowerCase()] ?? 1) -
-      (order[String(b['importance']).toLowerCase()] ?? 1),
-  );
+  // Python verify_claims: ranked order is authoritative; otherwise the
+  // inventory's coarse importance sorts the queue (central first).
+  const ordered = init.claimsRanked
+    ? [...claims]
+    : (() => {
+        const order: Record<string, number> = {
+          central: 0,
+          supporting: 1,
+          peripheral: 2,
+        };
+        return [...claims].sort(
+          (a, b) =>
+            (order[String(a['importance']).toLowerCase()] ?? 1) -
+            (order[String(b['importance']).toLowerCase()] ?? 1),
+        );
+      })();
   // Python: selected = ordered[: knobs.max_claims] — the resolved plan knob
   // (deterministic plan in auto mode), not the raw user depth preset.
   const maxClaims = init.maxClaims ?? preset.maxClaims;

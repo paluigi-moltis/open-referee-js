@@ -30,6 +30,7 @@ import {
 import * as promptsCommittee from './prompts_committee';
 import type { BudgetHarness, FrontierPath, ResidualPath } from './budget';
 import { BudgetInfeasible } from './budget';
+import { BudgetExceeded } from '../providers/usage';
 import { knownOrEstimatedClaims } from './budget';
 
 /** Thresholds (Python module constants). */
@@ -197,12 +198,19 @@ export async function strategyCommittee(
       reflectUser,
       { callType: 'planner' },
     )) as { kind: string; value?: unknown; error?: LLMError };
+    if (res.kind === 'budget') {
+      // Python complete_json lets BudgetExceeded propagate (only LLMError is
+      // caught in the best-effort reflection) — rethrow instead of degrading
+      // (7e review B7).
+      throw res.error;
+    }
     if (res.kind === 'ok' && typeof res.value === 'object' && res.value !== null) {
       reflection = res.value as Record<string, unknown>;
       if (harness.plan !== undefined) harness.plan.planner_calls_used += 1;
     }
-  } catch {
+  } catch (err) {
     // reflection is best-effort (budget errors propagate)
+    if (err instanceof BudgetExceeded) throw err;
   }
 
   const summary = {

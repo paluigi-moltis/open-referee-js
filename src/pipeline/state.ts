@@ -82,6 +82,12 @@ export interface RunState {
     outputTokens: number;
     costUsd: number;
   }[];
+  /**
+   * Estimated additional budget needed to finish (7e review B4; Python
+   * state.shortfall_usd) — set when no continuation plan is feasible and the
+   * run wraps up incomplete.
+   */
+  shortfallUsd?: number;
   /** ISO 8601 timestamps. */
   startedAt: string;
   updatedAt: string;

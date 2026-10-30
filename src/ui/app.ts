@@ -23,9 +23,16 @@ import {
 } from '../config/secrets';
 import type { Document } from '../ingestion/document';
 import { ingestByExtensionAsync } from '../ingestion/readers_md';
-import { createProvider, closeProviders } from '../providers/factory';
+import {
+  createProvider,
+  closeProviders,
+  createDecisionProvider,
+} from '../providers/factory';
 import { RateLimiter } from '../providers/rate_limit';
 import type { ChatProvider } from '../providers/base';
+import type { DecisionCaller } from '../pipeline/orchestrator';
+import type { DecisionQuestion } from '../providers/decisions';
+import { DecisionsClient } from '../providers/decisions';
 import { runReview } from '../pipeline/orchestrator';
 import { loadRun, listRuns } from '../runs/store';
 import type { RunState } from '../pipeline/state';
@@ -78,6 +85,34 @@ async function resolveKey(providerName: string): Promise<string> {
     if (fromVault !== undefined) return fromVault;
   }
   return sessionKeys.get(providerName) ?? '';
+}
+
+/**
+ * 7e review (B6): build the decision-model caller from the bound decision
+ * role — Python RolePool wires `pool.decider` from
+ * `build_decision_provider(...)` so the DM layer is reachable from the UI.
+ * Returns undefined when the role is unbound/incomplete (dormant DM layer).
+ */
+async function buildDecider(
+  settings: AppSettings,
+): Promise<DecisionCaller | undefined> {
+  const dr = settings.decisionRole;
+  if (!dr?.provider || !dr.model) return undefined;
+  const cfg = settings.providers[dr.provider];
+  if (!cfg || cfg.type !== 'decision' || !cfg.baseUrl) return undefined;
+  const apiKey = await resolveKey(dr.provider);
+  const rateLimiter = new RateLimiter(settings.minDelayS);
+  const client: DecisionsClient = createDecisionProvider({
+    baseUrl: cfg.baseUrl,
+    apiKey: apiKey || undefined,
+    rateLimiter,
+    requestTimeoutS: settings.requestTimeoutS,
+    maxRetries: settings.maxRetries,
+  });
+  return async (input, questions: readonly DecisionQuestion[], _callType) => {
+    void _callType;
+    return client.decide(input, questions);
+  };
 }
 
 // ----------------------------------------------------------------- settings --
@@ -790,12 +825,15 @@ function createResumeSection(io: {
             providers = await io.buildProviders();
             io.setActiveProviders(providers);
             const progress = new ProgressController(io.progressRoot);
+            // 7e review (B6): the resume path gets the decision caller too.
+            const decider = await buildDecider(io.settings);
             const gen = runReview({
               doc: null as unknown as Document,
               settings: io.settings,
               providers: providers as { strong: ChatProvider; small: ChatProvider },
+              decider,
               searchApiKeys: io.settings.searchApiKeys,
-              resume: { state, settings: io.settings },
+              resume: { state, settings: io.settings, decider },
               onEvent: (e, p) => progress.onEvent(e, p),
             });
             let final: RunState | undefined;
@@ -951,6 +989,9 @@ export function mountApp(root: HTMLElement): void {
         let provider = seen.get(name);
         if (!provider) {
           const apiKey = await resolveKey(name);
+          // 7d review (C1): the role's capability flag rides the binding —
+          // a shared provider keeps the flag of the role that built it.
+          const supportsReasoning = settings.roles[role].supportsReasoning;
           provider = createProvider({
             providerType: cfg.type,
             baseUrl: cfg.baseUrl,
@@ -958,6 +999,7 @@ export function mountApp(root: HTMLElement): void {
             rateLimiter,
             requestTimeoutS: settings.requestTimeoutS,
             maxRetries: settings.maxRetries,
+            supportsReasoning,
           });
           seen.set(name, provider);
         }
@@ -980,10 +1022,13 @@ export function mountApp(root: HTMLElement): void {
       }
       const providers = await buildProviders();
       activeProviders = providers;
+      // 7e review (B6): construct the decision provider from the bound role.
+      const decider = await buildDecider(settings);
       const gen = runReview({
         doc: doc,
         settings,
         providers: providers as { strong: ChatProvider; small: ChatProvider },
+        decider,
         searchApiKeys: settings.searchApiKeys,
         onEvent: (e, p) => progress.onEvent(e, p),
       });
@@ -1040,6 +1085,7 @@ export function mountApp(root: HTMLElement): void {
                     const progress = new ProgressController(progressRoot);
                     const providers = await buildProviders();
                     activeProviders = providers;
+                    const topUpDecider = await buildDecider(settings);
                     const gen = runReview({
                       doc: null as unknown as Document,
                       settings,
@@ -1047,8 +1093,9 @@ export function mountApp(root: HTMLElement): void {
                         strong: ChatProvider;
                         small: ChatProvider;
                       },
+                      decider: topUpDecider,
                       searchApiKeys: settings.searchApiKeys,
-                      resume: { state: saved, settings },
+                      resume: { state: saved, settings, decider: topUpDecider },
                       onEvent: (e, p) => progress.onEvent(e, p),
                     });
                     let final: RunState | undefined;
@@ -1146,6 +1193,8 @@ export function mountApp(root: HTMLElement): void {
         let provider = seen.get(name);
         if (!provider) {
           const apiKey = await resolveKey(name);
+          // 7d review (C1): the role's capability flag rides the binding.
+          const supportsReasoning = settings.roles[role].supportsReasoning;
           provider = createProvider({
             providerType: cfg.type,
             baseUrl: cfg.baseUrl,
@@ -1153,6 +1202,7 @@ export function mountApp(root: HTMLElement): void {
             rateLimiter,
             requestTimeoutS: settings.requestTimeoutS,
             maxRetries: settings.maxRetries,
+            supportsReasoning,
           });
           seen.set(name, provider);
         }

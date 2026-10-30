@@ -1489,9 +1489,9 @@ export class BudgetHarness {
           whole_paper_passes: false,
           defense_round: false,
           max_artifacts: 0,
-          // 7f: the lean finish keeps the meta merger's own overall — no
-          // synthesis essay on a shrinking plan (min_viable_knobs parity).
-          synthesis: false,
+          // e2ba304-era parity (7f review D2): Python residual_frontier's
+          // lean-finish does NOT touch synthesis — only min_viable_knobs
+          // carries synthesis:false. The essay keeps the min-viable floor.
         }),
       ],
     ];

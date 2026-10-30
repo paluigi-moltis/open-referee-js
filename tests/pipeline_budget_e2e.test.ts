@@ -184,9 +184,10 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     const small2 = new ScriptedProvider();
     queueHead(strong2);
     // surveyor (small) + bibliography (small) + meta + synthesis (strong) +
-    // validate (strong; 7f: the doi finding from the offline bibliography
-    // resolution rides the merged stream) + copyedit (small): the drain
-    // re-runs triage -> assemble (nothing had completed).
+    // copyedit (small): the drain re-runs triage -> assemble (nothing had
+    // completed). e2ba304 (7R F1): validate no longer runs merely because
+    // the offline bibliography leaves a doi checker finding — it needs LLM
+    // candidates, and challengeValidated is empty here, so validate SKIPS.
     small2.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
       j({
@@ -199,7 +200,6 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     strong2.queue(
       j({ overall_feedback: 'topped-up report', recommendation: 'accept' }),
       j({ overall_feedback: '## synth' }), // synthesis (7f)
-      j({ rejected: [], comments: [] }), // validate over the merged stream
     );
 
     const raised = makeSettings({ maxCostUsd: 50 });
@@ -221,10 +221,10 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     // call sequence recomputed from the ACTUAL resume re-entry: NOTHING had
     // completed in attempt 1 (triage failed on the first projection), so the
     // full pipeline replays: triage, claims, worker, 3 challengers, meta,
-    // synthesis, validate on strong; surveyor, bibliography, copyedit on
-    // small. Challenger count is 2 section + 1 whole-paper under the e5eedfa
-    // fallback split.
-    expect(strong2.calls).toHaveLength(9);
+    // synthesis on strong; surveyor, bibliography, copyedit on small.
+    // Challenger count is 2 section + 1 whole-paper under the e5eedfa
+    // fallback split; validate SKIPS (no LLM candidates post-e2ba304).
+    expect(strong2.calls).toHaveLength(8);
     expect(small2.calls).toHaveLength(3);
   });
 
@@ -449,7 +449,11 @@ describe('challengers respect the budget affordance gate (81f5a61)', () => {
         // Huge TOKEN counts (not cost): the empirical unit-cost EMA is
         // token-based, so this trips ONLY the challenger affordance gates.
         // Keeping costUsd low leaves actual spend small so the other
-        // affordance-gated calls (synthesis, copyedit) still run.
+        // affordance-gated calls still run — though the restored plan's
+        // projected remainder at this pricing ALSO closes the synthesis AND
+        // copyedit affordance gates independently of the low costUsd (the
+        // projection reads the plan's remaining-cost estimate, not the
+        // ledger), which is why no synthesis reply is queued below.
         inputTokens: 5_000_000,
         outputTokens: 1_000_000,
         costUsd: 0.001,
@@ -523,18 +527,22 @@ describe('challengers respect the budget affordance gate (81f5a61)', () => {
       }),
     );
     const state2 = second.state;
-    expect(state2.stages['challenge']).toBe('done');
+    // The auto-mode restored plan's projection exceeds the $52 budget at
+    // every checkpoint: no continuation is feasible, so the run WRAPS UP —
+    // challenge never runs (its gate would stop it anyway), the shortfall is
+    // recorded, and the partial wrap-up report assembles without meta.
+    expect(state2.stages['challenge']).toBe('skipped');
     expect(state2.stages['assemble']).toBe('done');
-    const report = state2.report as import('../src/report/models').ReviewReport;
-    expect(report.comments.map((c) => c.comment)).toContain(
-      'the count contradicts Table 1',
-    );
-    // meta succeeded (its overall survives — synthesis is gated off here by
-    // the projection; covered in pipeline_e2e.test.ts instead).
-    expect(report.overall).toBe('gated but assembled');
-    // strong made exactly: cataloguer, claim worker, meta, validate — zero
-    // challenger calls (their users start with 'Section:').
-    expect(strong2.calls).toHaveLength(4);
+    expect(state2.partial).toBe(true);
+    // 7e review (B4): the estimated shortfall rides the state for the UI.
+    expect(state2.shortfallUsd).toBeGreaterThan(0);
+    // report? false — the drain/wrap-up clears the persisted report for the
+    // resumable top-up (Stage 7c contract); the drained state carries the
+    // partial trail (skipped stages + shortfall) instead.
+    expect(state2.report).toBeUndefined();
+    // strong made exactly: cataloguer, claim worker — zero challenger calls
+    // (their users start with 'Section:'), zero meta/validate calls.
+    expect(strong2.calls).toHaveLength(2);
     expect(
       strong2.calls.every((c) => !c.messages[1]!.content.startsWith('Section:')),
     ).toBe(true);
