@@ -189,7 +189,15 @@ describe('two-phase JSON (Stage 7d) — ladder sequencing', () => {
     expect(user).toContain('output ONLY the required JSON now');
     // both phase records booked under the original call type (triage):
     // the ledger sees four 'triage'-tagged records (single, low-effort,
-    // phase 1, phase 2).
+    // phase 1, phase 2). 7d review (C4): assert the callType tail on the
+    // run state — the ledger records persist there.
+    const { loadRun, listRuns } = await import('../src/runs/store');
+    const runs = await listRuns();
+    const saved = await loadRun(runs[0]!.runId);
+    const triageTypes = (saved!.ledgerCalls ?? [])
+      .filter((c) => c.callType === 'triage')
+      .map((c) => c.role);
+    expect(triageTypes).toEqual(['strong', 'strong', 'strong', 'strong']);
   });
 
   it('non-reasoning stubs never escalate: one call per stage, queues stable', async () => {

@@ -18,6 +18,13 @@ export interface RoleConfig {
   model: string;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * 7d review (C1): does this role's endpoint host reasoning models whose
+   * thinking can exhaust the output budget before any JSON is emitted?
+   * Universal merge rule: non-boolean values are dropped. Default false =
+   * the single-call path (no two-phase escalation ladder).
+   */
+  supportsReasoning?: boolean;
 }
 
 /** Depth-preset knobs (Python DepthPreset, 'standard' defaults). */

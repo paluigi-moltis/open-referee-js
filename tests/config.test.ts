@@ -181,6 +181,30 @@ describe('mergeSettings', () => {
       mergeSettings({ review: { claimRouting: 'mega', outputBudget: 'max' } }).review,
     ).toEqual({});
   });
+
+  it('round-trips the 7d review supportsReasoning role flag (universal rule)', () => {
+    // boolean rides the role block
+    expect(
+      mergeSettings({
+        roles: { strong: { provider: 'p', model: 'm', supportsReasoning: true } },
+      }).roles.strong,
+    ).toEqual({ provider: 'p', model: 'm', supportsReasoning: true });
+    // non-boolean values are DROPPED (universal rule) — flag stays absent
+    expect(
+      mergeSettings({
+        roles: { strong: { provider: 'p', model: 'm', supportsReasoning: 'yes' } },
+      }).roles.strong,
+    ).toEqual({ provider: 'p', model: 'm' });
+    expect(
+      mergeSettings({
+        roles: { small: { provider: 'p', model: 'm', supportsReasoning: 1 } },
+      }).roles.small,
+    ).toEqual({ provider: 'p', model: 'm' });
+    // absent flag stays absent (default false = single-call path)
+    expect(
+      mergeSettings({ roles: { vision: { provider: 'p', model: 'm' } } }).roles.vision,
+    ).toEqual({ provider: 'p', model: 'm' });
+  });
 });
 
 describe('storage roundtrip', () => {

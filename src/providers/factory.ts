@@ -16,6 +16,14 @@ export interface CreateProviderOptions {
   rateLimiter?: RateLimiter;
   requestTimeoutS?: number;
   maxRetries?: number;
+  /**
+   * 7d review (C1): role-config capability flag — does this endpoint host
+   * reasoning models? Stamped onto the constructed provider so the
+   * orchestrator's two-phase escalation ladder (gated on
+   * provider.supportsReasoning) becomes reachable from config. Default
+   * false = today's behavior.
+   */
+  supportsReasoning?: boolean;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -59,6 +67,36 @@ export function createDecisionProvider({
  * baseUrl), so roles hitting the same endpoint share one delay budget.
  */
 export function createProvider({
+  providerType,
+  baseUrl,
+  apiKey,
+  rateLimiter,
+  requestTimeoutS,
+  maxRetries,
+  supportsReasoning,
+  fetchImpl,
+  sleep,
+}: CreateProviderOptions): ChatProvider {
+  const provider = createProviderInner({
+    providerType,
+    baseUrl,
+    apiKey,
+    rateLimiter,
+    requestTimeoutS,
+    maxRetries,
+    fetchImpl,
+    sleep,
+  });
+  // 7d review (C1): stamp the role-config capability flag onto the instance
+  // (adapters are plain classes — the flag rides the ReasoningCapable
+  // contract; default undefined = single-call path everywhere).
+  if (supportsReasoning !== undefined) {
+    (provider as { supportsReasoning?: boolean }).supportsReasoning = supportsReasoning;
+  }
+  return provider;
+}
+
+function createProviderInner({
   providerType,
   baseUrl,
   apiKey,
