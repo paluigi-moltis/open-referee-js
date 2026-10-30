@@ -1443,6 +1443,7 @@ export async function* runReview(
       const sections = reviewableSections(doc);
       let unitsDone = 0;
       let stageBroken = false;
+      let wpGateStopped = false;
       const claimedAnchors = new Set<string>();
       const addClaimed = (comments: ReviewComment[]) => {
         for (const c of comments)
@@ -1455,6 +1456,15 @@ export async function* runReview(
             (c.paragraphAnchor ?? '') !== '' &&
             anchorIn(c.paragraphAnchor ?? '', sec.text),
         );
+        // 81f5a61: challengers respect the budget affordance gate — pass this
+        // section's candidates through unvalidated rather than burning budget
+        // the plan does not have (challengers are validators, not creators).
+        if (!harness.allow_call('section_challenger')) {
+          harness.note_gate_stop('section_challenger', 1);
+          challengeValidated.push(...cands);
+          unitsDone += 1;
+          continue;
+        }
         const res = await callJsonWithRepair(
           callJson,
           'strong',
@@ -1557,19 +1567,34 @@ export async function* runReview(
         const wpCandidates = artifacts.candidates.filter(
           (c) => !claimedAnchors.has(normPrefix(c.paragraphAnchor ?? '')),
         );
-        const wpRes = await callJsonWithRepair(
-          callJson,
-          'strong',
-          wholePaperChallengerSystem,
-          wholePaperChallengerPrompt(
-            doc.title,
-            manuscript,
-            // Python: json.dumps(wp_candidates, indent=1)[:30_000]
-            JSON.stringify(wpCandidates, null, 1).slice(0, 30_000),
-          ),
-          'whole_paper_challenge',
-        );
-        if (wpRes.kind === 'ok') {
+        // 81f5a61: the affordance gate applies here too — pass the
+        // cross-section candidates through unvalidated (Python
+        // `validated.extend(wp_candidates); return await defense_round(...)`;
+        // the defense tail below still runs, matching Python).
+        if (!harness.allow_call('whole_paper_challenge')) {
+          harness.note_gate_stop('whole_paper_challenge', 1);
+          challengeValidated.push(...wpCandidates);
+          wpGateStopped = true;
+        }
+        const wpRes = wpGateStopped
+          ? ({ kind: 'skipped_gate' } as const)
+          : await callJsonWithRepair(
+              callJson,
+              'strong',
+              wholePaperChallengerSystem,
+              wholePaperChallengerPrompt(
+                doc.title,
+                manuscript,
+                // Python: json.dumps(wp_candidates, indent=1)[:30_000]
+                JSON.stringify(wpCandidates, null, 1).slice(0, 30_000),
+              ),
+              'whole_paper_challenge',
+            );
+        if (wpRes.kind === 'skipped_gate') {
+          // candidates already passed through; the challenge tail (defense)
+          // continues below — Python `return await defense_round(...)`.
+          yield* emit('challenge', 'running', 'whole-paper challenge: budget gate');
+        } else if (wpRes.kind === 'ok') {
           // fe463f2: bare validated list instead of the documented envelope;
           // 61f5822: non-dict payloads skipped (Python parity).
           let o =

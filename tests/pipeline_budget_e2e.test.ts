@@ -398,3 +398,131 @@ describe('copyedit knob gates', () => {
     expect(small.calls).toHaveLength(3);
   });
 });
+
+// ------------------------------------- challenger budget gate (81f5a61) --
+
+describe('challengers respect the budget affordance gate (81f5a61)', () => {
+  it('a tripped gate passes candidates through unvalidated without challenger calls', async () => {
+    // Deterministic gate trip: run 1 (preset cap) completes triage only.
+    // The resume re-enters in AUTO mode with three synthetic expensive
+    // section_challenger ledger records restored — the harness's empirical
+    // unit cost for that type explodes, allow_call('section_challenger'/
+    // 'whole_paper_challenge') goes false, and the challenge stage must pass
+    // candidates through unvalidated (no challenger provider calls) while
+    // claims/survey/verify/meta still run.
+    const capSettings = makeSettings({ maxCostUsd: 0.0106 });
+    const strong = new ScriptedProvider();
+    const small = new ScriptedProvider();
+    queueHead(strong);
+    const first = await drain(
+      runReview({
+        doc: makeDoc(),
+        settings: capSettings,
+        providers: { strong, small },
+      }),
+    );
+    expect(first.state.partial).toBe(true);
+
+    // Inflate the persisted ledger with synthetic challenger spend.
+    const resumeState = await loadRun(first.state.runId);
+    resumeState!.ledgerCalls = [
+      ...(resumeState!.ledgerCalls ?? []),
+      ...Array.from({ length: 3 }, () => ({
+        model: 'm-strong',
+        role: 'strong',
+        callType: 'section_challenger',
+        inputTokens: 5_000_000,
+        outputTokens: 1_000_000,
+        costUsd: 1_000_000,
+      })),
+    ];
+    const autoSettings = makeSettings({
+      maxCostUsd: 10_000_000,
+      budget: { depth: 'auto', budgetUsd: 52 },
+      pricing: {
+        'm-strong': { input: 0.01, output: 2000 },
+        'm-small': { input: 0.005, output: 500 },
+      },
+    });
+    const strong2 = new ScriptedProvider();
+    const small2 = new ScriptedProvider();
+    strong2.queue(
+      j({
+        claims: [
+          {
+            id: 'cl001',
+            type: 'logical',
+            importance: 'central',
+            components: { statement: 's' },
+            anchor: 'bootstrap with 999 replications',
+            section: 'Methods',
+          },
+        ],
+      }),
+    );
+    strong2.queue(
+      j({
+        comments: [
+          {
+            quote: 'bootstrap with 999 replications',
+            message: 'the count contradicts Table 1',
+            score: 0.6,
+          },
+        ],
+      }),
+    );
+    // NO challenger replies: their gate must trip. Tail order: survey,
+    // defense(small)+adjudication(strong) on the surviving candidate,
+    // bibliography, meta, copyedit.
+    small2.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+    );
+    small2.queue(j({ defense: 'weak', defense_strength: 'weak' }));
+    strong2.queue(
+      j({
+        verdict: 'upheld',
+        reason: 'ok',
+        comment: {
+          title: 'count mismatch',
+          paragraph_anchor: 'bootstrap with 999 replications',
+          quote: 'bootstrap with 999 replications',
+          message: 'the count contradicts Table 1',
+          score: 0.6,
+          category: 'consistency',
+        },
+      }),
+    );
+    small2.queue(
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+    );
+    strong2.queue(
+      j({ overall_feedback: 'gated but assembled', recommendation: 'minor' }),
+    );
+    small2.queue(j({ items: [] }));
+    const second = await drain(
+      runReview({
+        doc: null as unknown as Document,
+        settings: autoSettings,
+        providers: { strong: strong2, small: small2 },
+        resume: { state: resumeState! },
+      }),
+    );
+    const state2 = second.state;
+    expect(state2.stages['challenge']).toBe('done');
+    expect(state2.stages['assemble']).toBe('done');
+    const report = state2.report as import('../src/report/models').ReviewReport;
+    expect(report.comments.map((c) => c.comment)).toContain(
+      'the count contradicts Table 1',
+    );
+    // strong made exactly: inventory, worker, adjudication, meta — zero
+    // challenger calls (their users start with 'Section:').
+    expect(strong2.calls).toHaveLength(4);
+    expect(
+      strong2.calls.every((c) => !c.messages[1]!.content.startsWith('Section:')),
+    ).toBe(true);
+  });
+});
