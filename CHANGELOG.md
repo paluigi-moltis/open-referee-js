@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7f — yield upgrades: checker findings merge, synthesis, wider gates
+
+- **Checker findings join the meta + validator streams** (449174c):
+  deterministic/recompute findings ride the comment stream into the meta
+  merger (provenance preserved) and into validate — they skipped the
+  defense gate by construction, so validate is their only LLM screening;
+  assemble dedupes so no finding appears twice.
+- **Synthesis pass**: a lead-referee essay (4-6 argued themes over the
+  deduplicated comments) replaces the merger's overall feedback. Gated
+  on the synthesis knob (off on min-viable/lean plans) and the budget
+  affordance gate; priced and output-budgeted; fail-soft.
+- **New lenses**: stats (statistical rigor, empirical papers) and
+  clarity (technical ambiguity, always on) — verbatim prompt parity.
+- **Defense second round**: deep plans (`defenseSecondRound`) re-run the
+  whole defense/adjudication gate over the survivors; planning counts
+  doubled when enabled.
+
 ### Stage 7e — decision models, committee planning, batched dm_defense
 
 - **Decision-model layer** (upstream b04cf21/eaa1a85): a `decision`

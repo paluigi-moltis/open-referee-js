@@ -12,7 +12,7 @@ CORS-open literature APIs: OpenAlex, Crossref, Tavily, TinyFish).
 - Your API key never leaves the page and is never persisted — it lives in
   memory for the session only (opt-in encrypted storage arrives in Stage 2).
 
-## Status: Stages 1–6 + 7a–7e complete
+## Status: Stages 1–6 + 7a–7f complete
 
 This is a working vertical slice of the port. It is **not** yet at full
 feature parity with the Python original. The pipeline is now:
@@ -74,7 +74,11 @@ confirms a path, and mid-run checkpoints rebuild residual plans when
 spend or spikes demand it. Without a decision role configured the layer
 is fully dormant (labelled LLM fallbacks, unchanged call sequences).
 Claim-defense verdicts are batched (40 comments per call, anchored
-passages inline) so large comment sets stay checkable.
+passages inline) so large comment sets stay checkable. Stage 7f raises
+the yield: deterministic checkers join the meta/validator streams, a
+lead-referee synthesis essay replaces the merger's overall feedback, and
+statistical-rigor + clarity lenses widen per-section coverage (deep
+plans re-run the defense gate over survivors).
 
 Literature grounding is **fail-soft**: a dead or CORS-blocked API degrades
 to a console warning and an empty result — it never fails the review run.
