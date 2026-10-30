@@ -55,6 +55,13 @@ export interface AppSettings {
   providers: Record<string, ProviderConfig>;
   /** role name -> RoleConfig */
   roles: { strong: RoleConfig; small: RoleConfig; vision: RoleConfig };
+  /**
+   * Optional decision-model role (Stage 7e; Python ModelRole.DECISION).
+   * Absent = the DM layer is fully dormant and every pipeline stage uses
+   * its labelled-LLM fallback with byte-identical call sequences (eaa1a85).
+   * Must bind to a provider of type 'decision' (/v1/decisions API).
+   */
+  decisionRole?: RoleConfig;
   /** USD per 1M tokens */
   pricing: Record<string, { input: number; output: number }>;
   /** Per-attempt request timeout in seconds (AbortController in the adapter). */

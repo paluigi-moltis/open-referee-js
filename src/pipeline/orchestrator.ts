@@ -25,6 +25,8 @@ import type { AppSettings } from '../config/schema';
 import type { Document } from '../ingestion/document';
 import type { ChatMessage, ChatProvider, ModelSpec } from '../providers/base';
 import { LLMError } from '../providers/base';
+import type { DecisionQuestion, DecisionResult } from '../providers/decisions';
+import { answer } from '../providers/decisions';
 import { BudgetExceeded, UsageLedger } from '../providers/usage';
 import {
   BudgetHarness,
@@ -103,6 +105,7 @@ import {
 } from '../literature/reference_resolution';
 import { runCopyEditStage } from './copyedit';
 import { findingToDict, runDeterministicChecks } from './checkers';
+import { replanChoice, rankClaims, strategyCommittee } from './committee';
 import { extractTables, extractTheorems } from '../ingestion/artifacts';
 import { SearchRouter, type SearchApiKeys } from '../literature/search';
 import { PeerReviewScout } from '../literature/scout';
@@ -129,6 +132,13 @@ export interface RunReviewOptions {
    */
   providers: { strong: ChatProvider; small: ChatProvider };
   /**
+   * Stage 7e: the optional decision model (settings.decisionRole). Absent
+   * (or the role left unbound) = the DM layer is fully dormant: every stage
+   * uses its labelled-LLM fallback and the e2e call sequences are
+   * byte-identical to pre-7e.
+   */
+  decider?: DecisionCaller;
+  /**
    * Session-only search-engine API keys (same treatment as provider keys
    * pre-vault). Absent/empty keys simply disable that engine.
    */
@@ -144,8 +154,21 @@ export interface RunReviewOptions {
     state: RunState;
     settings?: AppSettings;
     providers?: { strong: ChatProvider; small: ChatProvider };
+    /** Stage 7e: the decision caller for the resumed run. */
+    decider?: DecisionCaller;
   };
 }
+
+/**
+ * Python RolePool.decide: budget-checked (ledger), ledger-recorded under the
+ * given call type, harness-notified. The orchestrator wraps the raw
+ * DecisionsClient/FakeDecisionProvider into this shape.
+ */
+export type DecisionCaller = (
+  input: string,
+  questions: readonly DecisionQuestion[],
+  callType: string,
+) => Promise<DecisionResult | undefined>;
 
 /** Role name as used in settings.roles and ledger bookkeeping. */
 type Role = 'strong' | 'small';
@@ -518,6 +541,7 @@ export async function* runReview(
     doc: docOpt,
     settings: settingsOpt,
     providers: providersOpt,
+    decider: deciderOpt,
     searchApiKeys: keysOpt,
     onEvent: eventsOpt,
     resume,
@@ -525,6 +549,7 @@ export async function* runReview(
   let doc = docOpt;
   let settings = settingsOpt;
   let providers = providersOpt;
+  let decider = deciderOpt;
   const searchApiKeys = keysOpt;
   const onEvent = eventsOpt;
   const state: RunState =
@@ -537,6 +562,7 @@ export async function* runReview(
     }
     settings = resume.settings ?? settings;
     if (resume.providers) providers = resume.providers;
+    if (resume.decider !== undefined) decider = resume.decider;
     // The resumed run re-derives partiality from its own stage outcomes —
     // an interruption or a pre-abort degradation must not poison it.
     resume.state.partial = false;
@@ -571,6 +597,18 @@ export async function* runReview(
             vision: {
               provider: settings.roles.vision.provider,
               model: settings.roles.vision.model,
+            },
+          }
+        : {}),
+      // Stage 7e: the decision role is OPTIONAL (eaa1a85) — when its provider
+      // + model are bound, dm_* cost entries become priced and the committee
+      // wakes up; when absent the harness specs carry no 'decision' key and
+      // every DM unit costs 0 (the dormant, byte-identical pre-7e behavior).
+      ...(settings.decisionRole?.provider && settings.decisionRole?.model
+        ? {
+            decision: {
+              provider: settings.decisionRole.provider,
+              model: settings.decisionRole.model,
             },
           }
         : {}),
@@ -757,6 +795,307 @@ export async function* runReview(
         outputTokens: c.usage.completionTokens,
         costUsd: c.costUsd,
       }));
+    }
+
+    // -------------------------------------------------- decision funnel --
+    // Python RolePool.decide: a decision call is a model call like any other
+    // — budget-checked against the ledger cap, recorded under its dm_* call
+    // type, and fed to the harness. Without a decider the funnel returns
+    // undefined and every consumer keeps its labelled fallback (eaa1a85).
+
+    /** Committee deps view over the orchestrator closures (7e). */
+    const committeeEmit = async (
+      message: string,
+      detail?: Record<string, unknown>,
+    ): Promise<void> => {
+      // Committee/replan announcements ride the challenge stage's running
+      // channel (Python emits them under Stage.PLAN, which the TS pipeline
+      // folds into the driving stage) — telemetry only, never a stage state.
+      await emit('challenge', 'running', message);
+      void detail;
+    };
+
+    const decide: DecisionCaller | undefined = decider
+      ? async (input, questions, callType) => {
+          // Python: est_in = max(1, len(input) // 3); est_out = 1.
+          const estIn = Math.max(1, Math.floor(input.length / 3));
+          const dr = settings.decisionRole!;
+          const pricing = settings.pricing[dr.model];
+          const projected = pricing
+            ? (estIn * pricing.input + 1 * pricing.output) / 1_000_000
+            : 0;
+          try {
+            ledger.checkBudget(projected);
+          } catch {
+            return undefined; // the DM layer degrades like any gated call
+          }
+          const result = await decider(input, questions, callType);
+          if (result === undefined) return undefined;
+          const rec = ledger.record(
+            dr.model,
+            'decision',
+            { content: '', usage: result.usage, model: dr.model },
+            callType,
+          );
+          harness.note_record({
+            callType: rec.callType,
+            inputTokens: rec.usage.promptTokens,
+            outputTokens: rec.usage.completionTokens,
+            costUsd: rec.costUsd,
+          });
+          return result;
+        }
+      : undefined;
+
+    /** Python `_dm_triage_classification`: closed-set triage classification. */
+    async function dmTriageClassification(
+      doc_: Document,
+    ): Promise<Record<string, unknown>> {
+      if (decide === undefined) return {};
+      const abstract = doc_.fullText().slice(0, 8000);
+      const questions: DecisionQuestion[] = [
+        {
+          type: 'choice',
+          name: 'paper_type',
+          instructions: "The manuscript's dominant type.",
+          choices: ['theory', 'empirical', 'mixed', 'survey', 'other'].map((v) => ({
+            value: v,
+          })),
+        },
+        {
+          type: 'score',
+          name: 'mathematical_density',
+          instructions:
+            'Density of formal mathematics (theorems, proofs, derivations).',
+          levels: ['none', 'light', 'moderate', 'heavy'].map((v) => ({ label: v })),
+        },
+        {
+          type: 'choice',
+          name: 'statistical_content',
+          instructions: 'The kind of statistical/econometric content.',
+          choices: ['none', 'descriptive', 'inferential', 'causal', 'forecasting'].map(
+            (v) => ({ value: v }),
+          ),
+        },
+        {
+          type: 'choice',
+          name: 'methodological_style',
+          instructions: 'The dominant methodological style.',
+          choices: [
+            'analytical-theory',
+            'econometrics',
+            'machine-learning',
+            'simulation',
+            'mixed',
+          ].map((v) => ({ value: v })),
+        },
+      ];
+      let result;
+      try {
+        result = await decide(
+          `Manuscript: ${doc_.title}\n\n${abstract}`,
+          questions,
+          'dm_triage',
+        );
+      } catch {
+        return {};
+      }
+      if (result === undefined) return {};
+      const out: Record<string, unknown> = {};
+      let a = answer(result, 'paper_type');
+      if (a?.choice) out['paper_type'] = a.choice;
+      a = answer(result, 'mathematical_density');
+      if (a !== undefined && a.probabilities.length > 0) {
+        // score level index -> label with the highest probability
+        let best: Record<string, unknown> | undefined;
+        for (const p of a.probabilities) {
+          if (
+            best === undefined ||
+            Number(p['probability'] ?? 0) > Number(best['probability'] ?? 0)
+          ) {
+            best = p;
+          }
+        }
+        const v = best?.['value'];
+        if (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 4) {
+          out['mathematical_density'] = (
+            ['none', 'light', 'moderate', 'heavy'] as const
+          )[v];
+        }
+      }
+      for (const name of ['statistical_content', 'methodological_style']) {
+        const ans = answer(result, name);
+        if (ans?.choice) out[name] = ans.choice;
+      }
+      return out;
+    }
+
+    /**
+     * Python survey-stage DM relevance filter: batched predicates over the
+     * first 40 pack items; low-probability items are dropped before the
+     * surveyor reads the pack.
+     */
+    async function dmSurveyFilter(
+      triage: Record<string, unknown>,
+      pack: ContextPack,
+    ): Promise<void> {
+      if (decide === undefined || pack.items.length === 0) return;
+      const head = pack.items.slice(0, 40);
+      const qItems = head
+        .map(
+          (it, i) =>
+            `${i + 1}. ${it.title.slice(0, 120)} — ${(it.whyRelevant ?? '').slice(0, 80)}`,
+        )
+        .join('\n');
+      const qs: DecisionQuestion[] = head.map((_it, i) => ({
+        type: 'predicate',
+        name: `item_${i + 1}`,
+        instructions:
+          `Literature item ${i + 1} is relevant background for reviewing a ` +
+          'manuscript in this field and should be kept in the context pack.',
+      }));
+      try {
+        const dm = await decide(
+          `Field: ${String(triage['domain'] ?? 'unknown')}\n\nItems:\n${qItems}`,
+          qs,
+          'dm_survey',
+        );
+        if (dm === undefined) return;
+        const kept: LiteratureItem[] = [];
+        for (let i = 0; i < head.length; i++) {
+          const a = answer(dm, `item_${i + 1}`);
+          if (a === undefined || a.probability === undefined || a.probability >= 0.5) {
+            kept.push(head[i]!);
+          }
+        }
+        const dropped = pack.items.length - kept.length;
+        pack.items = [...kept, ...pack.items.slice(40)];
+        if (dropped > 0) {
+          await emit(
+            'survey',
+            'running',
+            `decision filter dropped ${dropped} irrelevant literature items`,
+          );
+        }
+      } catch {
+        // DM survey filter failed: keeping all items (Python logs + continues)
+      }
+    }
+
+    /**
+     * Python `_dm_validator_gate`: batched grounding predicates (60 per
+     * decide call) over the meta draft's comments before the validator.
+     */
+    async function dmValidatorGate(
+      doc_: Document,
+      comments: Record<string, unknown>[],
+      manuscript_: string,
+    ): Promise<Record<string, unknown>[]> {
+      if (decide === undefined || comments.length === 0) return comments;
+      const kept: Record<string, unknown>[] = [];
+      let dropped = 0;
+      for (let lo = 0; lo < comments.length; lo += 60) {
+        const chunk = comments.slice(lo, lo + 60);
+        const listing = chunk
+          .map(
+            (c, i) =>
+              `${i + 1}. [${String(c['title'] ?? '').slice(0, 60)}] quote=${String(
+                c['quote'] ?? '',
+              ).slice(
+                0,
+                100,
+              )} anchor=${String(c['paragraph_anchor'] ?? '').slice(0, 80)}`,
+          )
+          .join('\n');
+        const qs: DecisionQuestion[] = chunk.map((_c, i) => ({
+          type: 'predicate',
+          name: `comment_${i + 1}`,
+          instructions:
+            `Review comment ${i + 1} quotes or paraphrases text that actually ` +
+            'appears in the manuscript text provided above (not invented) — ' +
+            'check the quote/anchor against that text.',
+        }));
+        let dm: DecisionResult | undefined;
+        try {
+          dm = await decide(
+            `Manuscript: ${doc_.title}\n\nManuscript text:\n---\n${manuscript_}\n---\n\nComments:\n${listing}`,
+            qs,
+            'dm_validate',
+          );
+        } catch {
+          dm = undefined;
+        }
+        if (dm === undefined) {
+          kept.push(...chunk);
+          continue;
+        }
+        for (let i = 0; i < chunk.length; i++) {
+          const a = answer(dm, `comment_${i + 1}`);
+          if (a === undefined || a.probability === undefined || a.probability >= 0.5) {
+            kept.push(chunk[i]!);
+          } else {
+            dropped += 1;
+          }
+        }
+      }
+      if (dropped > 0) {
+        await emit(
+          'validate',
+          'running',
+          `decision gate dropped ${dropped} ungrounded comments before validation`,
+        );
+      }
+      return kept;
+    }
+
+    /**
+     * Python `_replan_checkpoint`: telemetry when on-plan; when the harness
+     * flags a deviation (or a spike), rebuild the residual frontier and let
+     * the committee pick a continuation; when NOTHING is feasible, wrap up.
+     */
+    async function* replanCheckpoint(
+      where: string,
+    ): AsyncGenerator<StageEvent, void, undefined> {
+      if (harness.plan === undefined) return;
+      const reason = harness.should_replan();
+      const st = harness.status();
+      if (reason === null) {
+        yield* emit(
+          'triage',
+          'running',
+          `budget after ${where}: $${Number(st['actual_usd']).toFixed(2)} spent, ` +
+            `$${Number(st['projected_final_usd']).toFixed(2)} projected of ` +
+            `$${Number(st['budget_usd']).toFixed(2)}`,
+        );
+        syncBudgetToState();
+        return;
+      }
+      const applied = await replanChoice(
+        {
+          callJson: async (role, system, user, opts) =>
+            callJson(role, system, user, opts),
+          decide,
+          harness,
+          emit: committeeEmit,
+          triage: artifacts.triage ?? {},
+          syncBudgetToState,
+        },
+        reason,
+      );
+      if (!applied) {
+        // Python: wrapup_incomplete. The TS pipeline's drain path (partial
+        // report + cleared persisted report) already yields the resumable
+        // top-up outcome; record the shortfall on the run state instead.
+        state.partial = true;
+        syncBudgetToState();
+        await saveRun(state);
+        yield* emit(
+          'challenge',
+          'running',
+          `no feasible continuation (${reason}); wrapping up with a partial report — ` +
+            `est. +$${harness.shortfall().toFixed(2)} needed`,
+        );
+      }
     }
 
     /** Persist the per-stage artifact map + doc snapshot + budget state. */
@@ -1066,14 +1405,24 @@ export async function* runReview(
     }
 
     // ------------------------------------------------------------ 1. triage --
+    // Python `_triage`: the DM closed-set classification half runs FIRST and
+    // its result is (a) injected into the LLM user prompt as given and
+    // (b) merged over the LLM reply (DM wins shared keys). Dormant without a
+    // decider — the LLM prompt byte-stream is unchanged pre-7e.
+    let dmClass: Record<string, unknown> = {};
     if (!skipIfDone('triage')) {
       yield* emit('triage', 'running');
-      const triageRes = await callJson(
-        'strong',
-        triageSystem,
-        triagePrompt(doc.title, manuscript),
-        { callType: 'triage' },
-      );
+      dmClass = await dmTriageClassification(doc);
+      let triageUser = triagePrompt(doc.title, manuscript);
+      if (Object.keys(dmClass).length > 0) {
+        triageUser +=
+          '\n\n## Classification already determined (use as given)\n\n' +
+          JSON.stringify(dmClass) +
+          '\nFocus your reply on domain, search queries, key citations, main claims.\n';
+      }
+      const triageRes = await callJson('strong', triageSystem, triageUser, {
+        callType: 'triage',
+      });
       {
         const keep = yield* settle('triage', triageRes, async (v) => {
           artifacts.triage = (v ?? {}) as Record<string, unknown>;
@@ -1082,6 +1431,11 @@ export async function* runReview(
         if (!keep) {
           budgetError = triageRes.kind === 'budget' ? triageRes.error : undefined;
         }
+      }
+      // DM classification wins on shared keys (Python triage.update(dm_class)).
+      if (Object.keys(dmClass).length > 0 && artifacts.triage !== undefined) {
+        artifacts.triage = { ...artifacts.triage, ...dmClass };
+        await syncArtifacts();
       }
     }
 
@@ -1096,12 +1450,77 @@ export async function* runReview(
         settings,
       });
       if (inv.budget) budgetError = inv.budget;
+      // Python: the exact claim count is the dominant cost driver; claims are
+      // importance-ranked (decision model when available), then — in AUTO
+      // mode — the committee commits a frontier path for the run.
+      if (decide !== undefined && inv.claims.length > 0 && isAuto) {
+        try {
+          inv.claims = await rankClaims(
+            {
+              callJson: async (role, system, user, opts) =>
+                callJson(role, system, user, opts),
+              decide,
+              harness,
+              emit: committeeEmit,
+              triage: artifacts.triage ?? {},
+              syncBudgetToState,
+            },
+            inv.claims,
+          );
+        } catch {
+          // ranking degraded to inventory order inside rankClaims
+        }
+      }
       artifacts.claims = inv.claims;
       await syncArtifacts();
       if (budgetError) {
         yield* emit('claims', 'failed', `budget cap reached: ${budgetError.message}`);
       } else if (inv.claims.length > 0) {
         yield* emit('claims', 'done', `${inv.claims.length} claims catalogued`);
+        // AUTO committee: reflect -> choose -> confirm (7e). Dormant without
+        // a decider OR outside auto mode (Python _is_auto gate).
+        if (isAuto) {
+          try {
+            const committed = await strategyCommittee(
+              {
+                callJson: async (role, system, user, opts) =>
+                  callJson(role, system, user, opts),
+                decide,
+                harness,
+                emit: committeeEmit,
+                triage: artifacts.triage ?? {},
+                syncBudgetToState,
+              },
+              inv.claims,
+            );
+            planKnobs = harness.plan?.knobs ?? planKnobs;
+            yield* emit(
+              'claims',
+              'running',
+              `committee committed frontier path '${committed.path.name}'`,
+            );
+          } catch (err) {
+            if (err instanceof BudgetInfeasible) {
+              // Python strategy_committee lets BudgetInfeasible propagate and
+              // fail the run before any review spend. The TS e2e budget-gate
+              // scenario (restored million-dollar records from a drained
+              // preset attempt, 7c) hits the same infeasibility through the
+              // committee instead of the preflight planner; degrade to the
+              // per-call gating + cap drain path rather than discarding the
+              // in-flight run (the TS pipeline never discards its work).
+              state.partial = true;
+              syncBudgetToState();
+              await saveRun(state);
+              yield* emit(
+                'claims',
+                'running',
+                'no feasible frontier path; budget gating takes over',
+              );
+            } else {
+              // reflection/committee failure: the preflight plan stays in charge
+            }
+          }
+        }
       } else {
         // Python logs a warning and continues claimless.
         state.partial = true;
@@ -1160,6 +1579,9 @@ export async function* runReview(
             pack.items.push(it);
           }
         }
+        // 7e DM relevance filter (batched predicates over the first 40
+        // items): dormant without a decider, keeping all items.
+        await dmSurveyFilter(artifacts.triage ?? {}, pack);
       } catch (err) {
         console.warn(
           `literature collection degraded: ${err instanceof Error ? err.message : String(err)}`,
@@ -1434,6 +1856,11 @@ export async function* runReview(
       }
     }
 
+    // Python run(): a replan checkpoint after the verify stage (auto mode).
+    if (!budgetError && isAuto && harness.plan !== undefined) {
+      yield* replanCheckpoint('verify');
+    }
+
     // ------------------------------------------------------ 4. challenge --
     // Python `_challenge` semantics: per-section challenger passes over the
     // CANDIDATE list (claims + lens findings), then a whole-paper challenger
@@ -1687,6 +2114,11 @@ export async function* runReview(
           doc,
           candidates: challengeValidated,
           settings,
+          // 7e: when a decision role is configured the gate switches to
+          // batched DM adjudication (40 comments per decide() call, anchored
+          // manuscript passages); without one the per-comment LLM gate runs
+          // exactly as before (byte-identical call sequences).
+          decide,
         });
         challengeValidated.length = 0;
         challengeValidated.push(...gate.kept);
@@ -1696,6 +2128,11 @@ export async function* runReview(
         artifacts.challenge = [...challengeValidated];
         await syncArtifacts();
       }
+    }
+
+    // Python run(): a replan checkpoint after the challenge stage (auto mode).
+    if (!budgetError && isAuto && harness.plan !== undefined && decide !== undefined) {
+      yield* replanCheckpoint('challenge');
     }
 
     // --------------------------------------------------- 4b. bibliography --
@@ -1867,8 +2304,17 @@ export async function* runReview(
     const validated: ReviewComment[] = [];
     if (!budgetError && !skipIfDone('validate') && challengeValidated.length > 0) {
       yield* emit('validate', 'running');
+      // 7e Python `_dm_validator_gate`: batched grounding predicates (60 per
+      // decide call) drop ungrounded comments BEFORE the validator pass;
+      // dormant without a decider (identity on the list).
+      const gated = await dmValidatorGate(
+        doc,
+        challengeValidated as unknown as Record<string, unknown>[],
+        manuscript,
+      );
+      const gatedComments = gated as unknown as ReviewComment[];
       // Python: json.dumps(validated, indent=1)[:60_000]
-      const commentsJson = JSON.stringify(challengeValidated, null, 1).slice(0, 60_000);
+      const commentsJson = JSON.stringify(gatedComments, null, 1).slice(0, 60_000);
       const valRes = await callJson(
         'strong',
         validatorSystem,
@@ -1884,7 +2330,7 @@ export async function* runReview(
           }
         }
         // A fabricated criticism is worse than a missed one: drop rejected.
-        challengeValidated.forEach((c, i) => {
+        gatedComments.forEach((c, i) => {
           if (!rejected.has(i)) validated.push(c);
         });
         yield* emit('validate', 'done');
@@ -1892,7 +2338,7 @@ export async function* runReview(
         budgetError = valRes.error;
       } else {
         // Keep all candidates when validation itself fails.
-        validated.push(...challengeValidated);
+        validated.push(...gatedComments);
         state.partial = true;
         await saveRun(state);
         yield* emit(

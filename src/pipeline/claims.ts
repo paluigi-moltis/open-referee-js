@@ -17,7 +17,10 @@ import type { Document } from '../ingestion/document';
 import { buildDefinitionsPack } from '../ingestion/artifacts';
 import { normalizeText } from '../ingestion/document';
 import type { ReviewComment } from '../report/models';
-import type { CallResult, StageProgress } from './orchestrator';
+import type { DecisionQuestion, DecisionResult } from '../providers/decisions';
+import { answer } from '../providers/decisions';
+import type { CallResult, DecisionCaller, StageProgress } from './orchestrator';
+import { DM_BATCH_COMMENTS } from './budget';
 import * as promptsClaims from './prompts_claims';
 import { mapPool, type PoolResult } from './pool';
 import type { Stage, StageEvent } from './state';
@@ -423,21 +426,289 @@ export function nearPageBlocks(
 /**
  * Per-comment quality gate: authors' defense -> adjudication.
  *
- * Only for comments whose anchor resolves to document text (unanchored ones
- * go straight to the meta-reviewer, which re-checks them globally). Gate
- * failure never drops a comment.
+ * With a decision model configured, verdicts + recalibrated severity are
+ * BATCHED decision questions (uphold/adjust/dismiss + severity rubric),
+ * DM_BATCH_COMMENTS comments per decide() call, each listing entry carrying
+ * the anchored manuscript passage next to the defense; an LLM rewrites only
+ * 'adjust' comments. A per-batch failure upholds ONLY that batch. Without a
+ * decider, the strong-model adjudicator adjudicates per comment (pre-7e
+ * behavior, byte-identical call sequences). Gate failures never drop a
+ * comment.
+ *
+ * Deep plans (defense_second_round) run the whole gate a second time over
+ * the survivors: only comments that withstand two independent adversarial
+ * rounds reach the report, with the second round's severity verdict final.
+ *
+ * Port of Python claims.py defense_round + _defense_round_dm (4132423).
  */
 export async function defenseRound(init: {
   callJson: CallJson;
   doc: Document;
   candidates: ReviewComment[];
   settings: AppSettings;
+  /** Decision caller (orchestrator RolePool.decide shim); absent = LLM gate. */
+  decide?: DecisionCaller;
   onEvent?: ClaimProgress;
 }): Promise<{ kept: ReviewComment[]; budget?: BudgetExceeded }> {
-  const { callJson, doc, candidates, settings, onEvent } = init;
+  const { callJson, doc, candidates, settings, decide, onEvent } = init;
   const preset = depthPreset(settings.review);
   if (!preset.defenseRound || candidates.length === 0) return { kept: [...candidates] };
 
+  let out: ReviewComment[];
+  if (decide !== undefined) {
+    out = await defenseRoundDm({ callJson, doc, candidates, decide, preset });
+  } else {
+    out = await defenseRoundLlm({ callJson, doc, candidates, preset });
+  }
+  if (preset.defenseSecondRound && out.length > 0 && out.length < candidates.length) {
+    onEvent?.({
+      stage: 'challenge',
+      status: 'running',
+      at: new Date().toISOString(),
+      detail: `second defense round on ${out.length} upheld comments`,
+    });
+    if (decide !== undefined) {
+      out = await defenseRoundDm({ callJson, doc, candidates: out, decide, preset });
+    } else {
+      out = await defenseRoundLlm({ callJson, doc, candidates: out, preset });
+    }
+  }
+  return { kept: out };
+}
+
+/** ReviewComment as a raw comment dict for the DM listing (Python c.get). */
+function commentDict(c: ReviewComment): Record<string, unknown> {
+  const o: Record<string, unknown> = {
+    title: c.title ?? '',
+    quote: c.quote ?? '',
+    message: c.comment ?? '',
+    score: c.severity,
+  };
+  if (c.paragraphAnchor !== undefined) o['paragraph_anchor'] = c.paragraphAnchor;
+  if (c.category !== undefined) o['category'] = c.category;
+  return o;
+}
+
+function dictToComment(o: Record<string, unknown>, base: ReviewComment): ReviewComment {
+  const merged: ReviewComment = { ...base };
+  const anyMerged = merged as unknown as Record<string, unknown>;
+  if (typeof o['title'] === 'string') anyMerged['title'] = o['title'];
+  if (typeof o['paragraph_anchor'] === 'string')
+    merged.paragraphAnchor = o['paragraph_anchor'];
+  if (typeof o['quote'] === 'string') merged.quote = o['quote'];
+  if (typeof o['message'] === 'string') merged.comment = o['message'];
+  if (typeof o['score'] === 'number')
+    merged.severity = Math.min(1, Math.max(0, o['score']));
+  if (typeof o['category'] === 'string') merged.category = o['category'];
+  return merged;
+}
+
+/**
+ * Python `_dm_listing`: comment + defense + the manuscript passage the
+ * comment is anchored to. The passage is the evidence an adjudicator needs
+ * to check a defense against what the paper actually says; without it a
+ * glib defense wins by assertion.
+ */
+export function dmListing(
+  cands: Record<string, unknown>[],
+  defenses: string[],
+  passages: string[],
+): string {
+  return cands
+    .map((c, i) => {
+      const n = i + 1;
+      return (
+        `${n}. [${String(c['title'] ?? '').slice(0, 70)}] severity=${c['score']} ` +
+        `message=${String(c['message'] ?? '').slice(0, 300)}\n` +
+        `   defense: ${defenses[i]!.slice(0, 300)}\n` +
+        `   passage: ${passages[i]!.slice(0, 500)}`
+      );
+    })
+    .join('\n');
+}
+
+async function defenseRoundDm(init: {
+  callJson: CallJson;
+  doc: Document;
+  candidates: ReviewComment[];
+  decide: DecisionCaller;
+  preset: { maxParallelCalls: number };
+}): Promise<ReviewComment[]> {
+  const { callJson, doc, candidates, decide } = init;
+  // Authors' best honest defense per comment (small model), in parallel.
+  const defenseTexts = await mapPool(
+    candidates,
+    init.preset.maxParallelCalls,
+    async (c) => {
+      const anchor = c.paragraphAnchor || c.quote || '';
+      const passage = passageFor(doc, anchor) ?? '(anchor not found in document)';
+      const defense = await callJsonWithRepair(
+        callJson,
+        'small',
+        promptsClaims.DEFENSE_SYSTEM,
+        promptsClaims.defenseUser({
+          title: c.title ?? '',
+          quote: (c.quote || '').slice(0, 600),
+          message: (c.comment || '').slice(0, 1500),
+          passage: passage.slice(0, 2500),
+        }),
+        'defense',
+      );
+      if (defense.kind !== 'ok') return '(defense drafting failed)';
+      const dObj =
+        typeof defense.value === 'object' && defense.value !== null
+          ? (defense.value as Record<string, unknown>)
+          : {};
+      return (
+        `[${typeof dObj['defense_strength'] === 'string' ? dObj['defense_strength'] : 'unknown'}] ` +
+        String(dObj['defense'] ?? '').slice(0, 1200)
+      );
+    },
+  );
+  const defenses = defenseTexts.map((r) =>
+    r.ok ? r.value : '(defense drafting failed)',
+  );
+  const passages = candidates.map(
+    (c) =>
+      passageFor(doc, c.paragraphAnchor || c.quote || '') ??
+      '(anchor not found in document)',
+  );
+  const dicts = candidates.map(commentDict);
+  const sevMap: Record<string, number> = {
+    polish: 0.25,
+    minor: 0.45,
+    major: 0.7,
+    invalidating: 0.9,
+  };
+  const kept: ReviewComment[] = [];
+  const toAdjust: [number, ReviewComment][] = []; // [original candidate index, comment]
+  for (let lo = 0; lo < candidates.length; lo += DM_BATCH_COMMENTS) {
+    const batch = dicts.slice(lo, lo + DM_BATCH_COMMENTS);
+    const bDefenses = defenses.slice(lo, lo + DM_BATCH_COMMENTS);
+    const bPassages = passages.slice(lo, lo + DM_BATCH_COMMENTS);
+    const questions: DecisionQuestion[] = [];
+    for (let i = 1; i <= batch.length; i++) {
+      questions.push({
+        type: 'choice',
+        name: `verdict_${i}`,
+        instructions:
+          `Adjudicate comment ${i} after reading its authors' defense ` +
+          'and the manuscript passage it is anchored to — check the ' +
+          "defense's claims against the passage, not just its rhetoric. " +
+          'dismiss = the defense refutes it; adjust = partially right, ' +
+          'severity or wording needs correction; uphold = it stands.',
+        choices: ['uphold', 'adjust', 'dismiss'].map((v) => ({ value: v })),
+      });
+      questions.push({
+        type: 'score',
+        name: `severity_${i}`,
+        instructions: `Recalibrated severity for comment ${i} (if it stands).`,
+        levels: [
+          { label: 'polish', description: '0.1-0.34' },
+          { label: 'minor', description: '0.35-0.59' },
+          { label: 'major', description: '0.6-0.79' },
+          { label: 'invalidating', description: '0.8-1.0' },
+        ],
+      });
+    }
+    const listing = dmListing(batch, bDefenses, bPassages);
+    let dm: DecisionResult | undefined;
+    try {
+      dm = await decide(
+        (
+          `Manuscript: ${doc.title}\n\nComments with defenses and the ` +
+          `manuscript passages they are anchored to:\n\n${listing}`
+        ).slice(0, 60_000),
+        questions,
+        'dm_defense',
+      );
+    } catch {
+      dm = undefined;
+    }
+    if (dm === undefined) {
+      // DM adjudication failed: this batch upheld (nothing lost)
+      kept.push(...candidates.slice(lo, lo + DM_BATCH_COMMENTS).map((c) => ({ ...c })));
+      continue;
+    }
+    for (let i = 1; i <= batch.length; i++) {
+      const v = answer(dm, `verdict_${i}`);
+      const verdict = v?.choice ?? 'uphold';
+      if (verdict === 'dismiss') continue;
+      const base = candidates[lo + i - 1]!;
+      const cc: ReviewComment = { ...base };
+      const sv = answer(dm, `severity_${i}`);
+      if (sv !== undefined && sv.probabilities.length > 0) {
+        let best: Record<string, unknown> | undefined;
+        for (const p of sv.probabilities) {
+          if (
+            best === undefined ||
+            Number(p['probability'] ?? 0) > Number(best['probability'] ?? 0)
+          ) {
+            best = p;
+          }
+        }
+        const label = best?.['label'];
+        if (typeof label === 'string' && label in sevMap) {
+          cc.severity = sevMap[label]!;
+        }
+      }
+      if (verdict === 'adjust') {
+        toAdjust.push([lo + i - 1, cc]);
+      } else {
+        kept.push(cc);
+      }
+    }
+  }
+
+  // LLM rewrites only the adjusted comments (usually few)
+  for (const [idx, cc] of toAdjust) {
+    try {
+      const rewrite = await callJsonWithRepair(
+        callJson,
+        'small',
+        promptsClaims.ADJUDICATION_SYSTEM,
+        promptsClaims.adjudicationUser({
+          title: cc.title ?? '',
+          quote: (cc.quote || '').slice(0, 600),
+          message: (cc.comment || '').slice(0, 1500),
+          score: cc.severity,
+          defenseStrength: 'adjusted by decision model',
+          defense: defenses[idx]!.slice(0, 2000),
+          passage: passages[idx]!.slice(0, 2500),
+        }),
+        'adjudication',
+      );
+      if (rewrite.kind !== 'ok') {
+        kept.push(cc);
+        continue;
+      }
+      const rObj =
+        typeof rewrite.value === 'object' && rewrite.value !== null
+          ? (rewrite.value as Record<string, unknown>)
+          : {};
+      const final =
+        typeof rObj['comment'] === 'object' && rObj['comment'] !== null
+          ? (rObj['comment'] as Record<string, unknown>)
+          : undefined;
+      if (final && typeof final['message'] === 'string' && final['message']) {
+        kept.push(dictToComment(final, cc));
+      } else {
+        kept.push(cc);
+      }
+    } catch {
+      kept.push(cc);
+    }
+  }
+  return kept;
+}
+
+async function defenseRoundLlm(init: {
+  callJson: CallJson;
+  doc: Document;
+  candidates: ReviewComment[];
+  preset: { maxParallelCalls: number };
+}): Promise<ReviewComment[]> {
+  const { callJson, doc, candidates, preset } = init;
   const results: PoolResult<ReviewComment | null>[] = await mapPool(
     candidates,
     preset.maxParallelCalls,
@@ -510,7 +781,6 @@ export async function defenseRound(init: {
   );
 
   const kept: ReviewComment[] = [];
-  let budget: BudgetExceeded | undefined;
   for (let i = 0; i < results.length; i++) {
     const r = results[i]!;
     if (r.ok) {
@@ -521,16 +791,7 @@ export async function defenseRound(init: {
       kept.push(candidates[i]!);
     }
   }
-  onEvent?.(
-    {
-      stage: 'challenge',
-      status: 'running',
-      at: new Date().toISOString(),
-      detail: `defense gate: ${kept.length}/${candidates.length} comments upheld`,
-    },
-    undefined,
-  );
-  return { kept, budget };
+  return kept;
 }
 
 /**

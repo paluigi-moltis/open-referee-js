@@ -61,6 +61,21 @@ function mergeRole(raw: unknown, fallback: RoleConfig): RoleConfig {
 }
 
 /**
+ * Optional decision-role round-trip (Stage 7e): present only when the stored
+ * block has a string provider AND model — a half-bound role is not a role.
+ */
+function mergeRoleOptional(raw: unknown): RoleConfig | undefined {
+  if (!isRecord(raw)) return undefined;
+  if (typeof raw['provider'] !== 'string' || typeof raw['model'] !== 'string') {
+    return undefined;
+  }
+  const out: RoleConfig = { provider: raw['provider'], model: raw['model'] };
+  if (typeof raw['temperature'] === 'number') out.temperature = raw['temperature'];
+  if (typeof raw['maxTokens'] === 'number') out.maxTokens = raw['maxTokens'];
+  return out;
+}
+
+/**
  * Pure deep-merge of a raw parsed value over DEFAULT_SETTINGS: missing or
  * wrong-typed fields fall back to defaults; unknown keys are dropped.
  */
@@ -79,6 +94,8 @@ export function mergeSettings(raw: unknown): AppSettings {
       small: mergeRole(rolesRaw['small'], d.roles.small),
       vision: mergeRole(rolesRaw['vision'], d.roles.vision),
     },
+    // Stage 7e decision role: round-trip only when well-formed (universal rule).
+    decisionRole: mergeRoleOptional(raw['decisionRole']),
     pricing: mergePricing(raw['pricing']),
     requestTimeoutS: num(raw['requestTimeoutS'], d.requestTimeoutS),
     maxRetries: num(raw['maxRetries'], d.maxRetries),

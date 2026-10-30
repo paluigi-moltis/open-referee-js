@@ -1295,6 +1295,220 @@ export class BudgetHarness {
         'cut where they do not.',
     };
   }
+
+  // ------------------------------------------------- committee frontier --
+
+  /**
+   * Deterministic feasible-by-construction menu for the committee. Every
+   * returned path fits the (reserve-adjusted) budget (Python frontier()).
+   */
+  frontier(limit = 10): FrontierPath[] {
+    const cap = this.effective_budget();
+    const total_claims = knownOrEstimatedClaims(this.stats);
+    const out: FrontierPath[] = [];
+    for (const [name, desc, knobs] of FRONTIER_ARCHETYPES) {
+      const capped = Math.min(knobs.max_claims, total_claims);
+      const k = knobsCopy(knobs, { max_claims: capped });
+      let description = desc;
+      if (
+        capped < knobs.max_claims &&
+        knobs.max_claims > 0 &&
+        name !== 'fast-scan' &&
+        name !== 'triage-plus-lenses'
+      ) {
+        // rename to reflect the actual claim count when capped
+        description = description
+          .replace('Top-50', `Top-${capped}`)
+          .replace('All claims', `Top-${capped} claims`);
+      }
+      const cost = this._cost_of(k);
+      if (cost <= cap) {
+        out.push({
+          name,
+          description,
+          knobs: k,
+          est_cost_usd: pyRound(cost, 6),
+          claims_count: k.max_claims,
+          passes: passesOf(k),
+        });
+      }
+    }
+    // keep diversity: sort by cost, cap the list
+    out.sort((a, b) => a.est_cost_usd - b.est_cost_usd);
+    if (out.length > limit) {
+      // evenly spaced selection that always keeps the extremes
+      const idx: number[] = [];
+      for (let i = 0; i < limit; i++) {
+        idx.push(Math.round((i * (out.length - 1)) / (limit - 1)));
+      }
+      const seen = new Set<number>();
+      const picked: FrontierPath[] = [];
+      for (const i of idx) {
+        if (!seen.has(i)) {
+          seen.add(i);
+          picked.push(out[i]!);
+        }
+      }
+      return picked;
+    }
+    return out;
+  }
+
+  /**
+   * Commit a frontier path: feasible by construction, recomputed costs
+   * (Python path_to_plan).
+   */
+  path_to_plan(path: FrontierPath, reason: string, rationale = ''): ReviewPlan {
+    const [control, stages] = this._estimates_for(path.knobs);
+    const plan: ReviewPlan = {
+      plan_version: 1,
+      budget_usd: this.budget_usd,
+      target_usd: pyRound(path.est_cost_usd, 4),
+      knobs: path.knobs,
+      control_estimates: control,
+      stage_estimates: stages,
+      // no numeric cap on replans (project-owner decision); the counter
+      // still tracks how many committee calls were spent
+      planner_calls_max: 10_000,
+      planner_calls_used: this.plan?.planner_calls_used ?? 0,
+      rationale: rationale || `frontier path '${path.name}': ${path.description}`,
+      based_on: 'frontier',
+      adjustments: [
+        planAdjustmentNow(
+          reason,
+          `frontier:${path.name}`,
+          'committee',
+          path.description,
+        ),
+      ],
+    };
+    this.set_plan(plan, `frontier:${path.name}`);
+    return plan;
+  }
+
+  /**
+   * Commit a replan continuation: knobs applied, costs recomputed by the
+   * cost model (feasible by construction — built from the residual)
+   * (Python apply_residual).
+   */
+  apply_residual(path: ResidualPath, reason: string): ReviewPlan {
+    const [control, stages] = this._estimates_for(path.knobs);
+    const plan: ReviewPlan = {
+      plan_version: 1,
+      budget_usd: this.budget_usd,
+      target_usd: pyRound(this.actual_cost() + this._remaining_cost(path.knobs), 4),
+      knobs: path.knobs,
+      control_estimates: control,
+      stage_estimates: stages,
+      planner_calls_max: 10_000,
+      planner_calls_used: this.plan?.planner_calls_used ?? 0,
+      rationale: `continuation '${path.name}': ${path.description}`,
+      based_on: 'residual-frontier',
+      adjustments: [
+        planAdjustmentNow(
+          reason,
+          `continuation:${path.name}`,
+          'committee',
+          path.description,
+        ),
+      ],
+    };
+    this.set_plan(plan, `continuation:${path.name}`);
+    return plan;
+  }
+
+  /**
+   * 4-5 continuation plans built from residual steps + residual budget.
+   * Feasible by construction: actual + remaining <= budget - wrapup reserve
+   * (Python residual_frontier).
+   */
+  residual_frontier(limit = 5): ResidualPath[] {
+    if (this.plan === undefined) return [];
+    const cap = this.effective_budget();
+    const actual = this.actual_cost();
+    const cur = this.plan.knobs;
+    const verified = this.done['claim_verify'] ?? 0;
+    const remaining_now = Math.max(
+      0,
+      Math.min(cur.max_claims, knownOrEstimatedClaims(this.stats)) - verified,
+    );
+
+    const variant = (
+      name: string,
+      desc: string,
+      knobs: PlanKnobs,
+    ): ResidualPath | null => {
+      const proj = actual + this._remaining_cost(knobs);
+      if (proj > cap) return null;
+      const extra_claims = Math.max(
+        0,
+        Math.min(knobs.max_claims, knownOrEstimatedClaims(this.stats)) - verified,
+      );
+      const passes =
+        passesOf(knobs).filter((p) => !passesOf(cur).includes(p)) ||
+        // Python `or [...]` keeps the fallback when the filtered list is
+        // empty — an empty array is falsy in Python, always truthy in JS,
+        // so mirror the intent with an explicit check.
+        [];
+      return {
+        name,
+        description: desc,
+        knobs,
+        projected_final_usd: pyRound(proj, 6),
+        claims_remaining: extra_claims,
+        passes_remaining: passes.length > 0 ? passes : ['finish current passes'],
+      };
+    };
+
+    const candidates: [string, string, PlanKnobs][] = [
+      ['continue', 'Continue the current plan as-is', cur],
+      [
+        'trim-claims',
+        `Verify ~half of the ${remaining_now} remaining claims ` +
+          '(least important dropped first)',
+        knobsCopy(cur, {
+          max_claims: verified + Math.max(0, Math.floor(remaining_now / 2)),
+        }),
+      ],
+      [
+        'stop-claims-hold-breadth',
+        'Stop new claim verification; keep the planned breadth passes',
+        knobsCopy(cur, { max_claims: verified }),
+      ],
+      [
+        'drop-defense',
+        'Keep claims; skip the defense/adjudication gate',
+        knobsCopy(cur, { defense_round: false }),
+      ],
+      [
+        'lean-finish',
+        'Stop claims and breadth; challenger + meta + validation only',
+        knobsCopy(cur, {
+          max_claims: verified,
+          per_section_lenses: false,
+          whole_paper_passes: false,
+          defense_round: false,
+          max_artifacts: 0,
+        }),
+      ],
+    ];
+    // quality-ordered: keep the best feasible ones
+    const out: ResidualPath[] = [];
+    for (const [name, desc, knobs] of candidates) {
+      const v = variant(name, desc, knobs);
+      if (v !== null) out.push(v);
+    }
+    // 'continue' first if feasible, else ordered by least cutting
+    const priority: Record<string, number> = {
+      continue: 0,
+      'trim-claims': 1,
+      'stop-claims-hold-breadth': 2,
+      'drop-defense': 3,
+      'lean-finish': 4,
+    };
+    out.sort((a, b) => (priority[a.name] ?? 9) - (priority[b.name] ?? 9));
+    return out.slice(0, limit);
+  }
 }
 
 // ------------------------------------------------------------------ frontier --
