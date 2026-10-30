@@ -654,6 +654,41 @@ describe('defenseRound', () => {
     });
     expect(out.map((x) => x.comment)).toEqual(['keep-a', 'c-fixed']);
   });
+  it('second defense round runs on the survivors (deep plans)', async () => {
+    const mk = (msg: string): ReviewComment => ({
+      ...candidate,
+      comment: msg,
+    });
+    const upheld = (n: number) => [
+      j({ defense: 'd', defense_strength: 'weak' }),
+      j({ verdict: 'upheld', reason: 'ok', comment: { score: 0.6 + n * 0.01 } }),
+    ];
+    // round 1 over [a, b, c]: a dismissed, b + c upheld
+    const { calls, fn } = scripted([
+      j({ defense: 'd', defense_strength: 'strong' }),
+      j({ verdict: 'dismissed', reason: 'correct as stated' }),
+      ...upheld(0),
+      ...upheld(1),
+      // round 2 over the [b, c] survivors: b dismissed, c upheld again
+      j({ defense: 'd', defense_strength: 'strong' }),
+      j({ verdict: 'dismissed', reason: 'still wrong' }),
+      ...upheld(2),
+    ]);
+    const { kept: out } = await defenseRound({
+      callJson: fn,
+      doc: makeDoc(),
+      candidates: [mk('a'), mk('b'), mk('c')],
+      settings: makeSettings({
+        review: { defenseSecondRound: true, maxParallelCalls: 1 },
+      }),
+    });
+    // only the twice-upheld comment survives
+    expect(out).toHaveLength(1);
+    expect(out[0]!.comment).toBe('c');
+    // round 1: 3 defenses + 3 adjudications; round 2: 2 defenses + 2
+    // adjudications
+    expect(calls).toHaveLength(10);
+  });
 });
 
 // ---------------------------------------------------------------- passageFor --

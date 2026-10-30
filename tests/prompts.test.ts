@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  clarityVerifierSystem,
+  statsVerifierSystem,
+  synthesisPrompt,
+  synthesisSystem,
   COMMENT_SCHEMA,
   REFEREE_PERSONA,
   SEVERITY_RUBRIC,
@@ -53,6 +57,8 @@ describe('persona and shared rubric', () => {
       empiricalVerifierSystem,
       proseVerifierSystem,
       litVerifierSystem,
+      statsVerifierSystem,
+      clarityVerifierSystem,
     ]) {
       expect(system).toContain('top academic journal');
       expect(system).toContain('STRICT JSON');
@@ -67,6 +73,8 @@ describe('persona and shared rubric', () => {
       empiricalVerifierSystem,
       proseVerifierSystem,
       litVerifierSystem,
+      statsVerifierSystem,
+      clarityVerifierSystem,
       figureSystem,
       challengerSystem,
     ]) {
@@ -341,5 +349,29 @@ describe('stage 7d prompt A/B winners — char parity vs origin/main', () => {
     // severity taste must never remove; drops must be accountable
     expect(validatorSystem).toContain('recalibrated, never removed');
     expect(validatorSystem).toContain('List every dropped title');
+  });
+});
+
+// ------------------------------------------------------- stage 7f pins --
+// Char-length pins vs origin/main 26ae883 (fresh uv-run expecteds): stats
+// 2612, clarity 2420, synthesis system 1915, synthesis user template 306.
+
+describe('stage 7f prompts (449174c)', () => {
+  it('stats + clarity verifier lenses are verbatim (char pins)', () => {
+    expect(statsVerifierSystem.length).toBe(2612);
+    expect(clarityVerifierSystem.length).toBe(2420);
+  });
+
+  it('synthesis prompt mirrors the Python SYNTHESIS_USER template', () => {
+    expect(synthesisSystem.length).toBe(1915);
+    // the TS template literal replaces {snake_case} slots with ${camelCase};
+    // normalizing both to {} must yield identical skeletons
+    const tsSkeleton = synthesisPrompt('T', '{}', '{}', '{}', '{}', '{}').split(
+      'T',
+    ).length;
+    expect(tsSkeleton).toBeGreaterThan(1);
+    expect(synthesisPrompt('T', 'j', 'c', 'b', 's', 'v')).toContain(
+      'Write the overall assessment now. JSON only.',
+    );
   });
 });
