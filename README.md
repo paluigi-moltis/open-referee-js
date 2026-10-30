@@ -12,7 +12,7 @@ CORS-open literature APIs: OpenAlex, Crossref, Tavily, TinyFish).
 - Your API key never leaves the page and is never persisted — it lives in
   memory for the session only (opt-in encrypted storage arrives in Stage 2).
 
-## Status: Stages 1–6 + 7a + 7b complete
+## Status: Stages 1–6 + 7a + 7b + 7c complete
 
 This is a working vertical slice of the port. It is **not** yet at full
 feature parity with the Python original. The pipeline is now:
@@ -41,6 +41,15 @@ Findings persist on RunState (resume skips the re-scan) and join the report
 as `deterministic`-provenance comments in their own "Deterministic checks"
 section — the Findings section now carries provenance tag lines
 (`_[severity 0.85] · [statistical] · [claim_verify 2-of-2]_`).
+
+Stage 7c adds the **budget core**: a hard spend cap (`maxCostUsd`) checked
+before every model call, budget depth tiers (fast / standard / deep / auto)
+that drive the review depth presets, a projected-cost estimate and
+spend-so-far in the UI, and **resumable top-up** — a drained run wraps up
+a partial report, and raising the cap and resuming completes the review
+without re-calling completed stages. The copyedit annex now obeys its
+plan knob and the budget gate, and the meta review's output budget scales
+with the comment count.
 
 Literature grounding is **fail-soft**: a dead or CORS-blocked API degrades
 to a console warning and an empty result — it never fails the review run.

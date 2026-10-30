@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7c — budget core (cost model, deterministic planner, per-phase spend)
+
+- **Full port of `pipeline/budget.py`** (`src/pipeline/budget.ts`): the
+  cost model (per-call-type input estimates at 3 chars/token, per-tier
+  output budgets `callMaxTokens(callType, outLevel)`, pricing-table
+  arithmetic with Python `round(x, 6)` semantics via exact `pyRound`),
+  the deterministic planner (doc-stats → knobs/estimates ladder —
+  same doc + tier always yields the same plan; preset USD figures port
+  UNCHANGED per owner decision), the per-phase spend harness fed by
+  every booked call record (empirical unit costs, done counters, spike
+  detection, gate-stop registry), budget-driven steering with repair
+  options, and the wrap-up reserve.
+- **Settings block** `budget` (depth tier + hard `maxCostUsd`):
+  `mergeSettings` round-trips it; the UI settings fieldset gains the
+  tier selector, a projected-cost estimate, spend-so-far in the
+  progress panel, and a top-up affordance on a drained run.
+- **Gate wiring** (closes the two documented divergences):
+  `planKnobs.copyedit` + `harness.allow_call('copyedit')` gate the
+  copyedit stage (7a "always-on" divergence closed — knob off emits
+  `skipped` with no call, an open gate-stop is recorded like Python's
+  `note_gate_stop`); the meta call's max output tokens scales as
+  `max(callMaxTokens('meta', level), min(32_768, 2_000 + 130·n))`
+  (7a "not scaled" divergence closed). Depth presets now flow from the
+  budget tier (`depthPresetFromTier`) with user overrides still winning.
+- **Resumable top-up**: a budget drain mid-run persists the doc
+  snapshot + plan + ledger on RunState, wraps up a partial report for
+  the UI, and clears the persisted report so the resume gate re-enters
+  every not-completed stage; raising the cap and resuming completes the
+  run without re-calling completed stages (e2e-pinned in
+  `tests/pipeline_budget_e2e.test.ts`).
+
 ### Stage 7b — deterministic checkers (cross-refs, number consistency, table arithmetic)
 
 - **New deterministic checkers pass** (`src/pipeline/checkers.ts`, full port
@@ -55,9 +86,9 @@ PROVENANCE = ('deterministic','recompute')`) and both italic preambles
   no items and never blocks the report; only a budget cap surfaces. The
   `copyeditItems` artifact persists **before** the done event, so resume
   never re-calls the stage. Old runs without the stage keep loading.
-  _Documented divergence:_ Python gates the stage on `plan_knobs().copyedit`
-  and `budget_allows('copyedit')` (budget harness); pre-catch-up-7c the
-  stage is always-on here.
+  _Documented divergence (CLOSED in 7c):_ Python gates the stage on
+  `plan_knobs().copyedit` and `budget_allows('copyedit')` (budget
+  harness); both gates are wired now (see Stage 7c).
 - **Deterministic DOI resolution** (Python `_resolve_references` +
   `literature/reference_resolution.py` port): before the bibliography audit,
   every bibliography entry is looked up on Crossref + OpenAlex (concurrency
