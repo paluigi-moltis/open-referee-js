@@ -4,6 +4,43 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7R — review-fix pass (7d/7e/7f findings)
+
+- **Checker findings assemble-only** (upstream e2ba304, reverting the 7f
+  merge): deterministic checker findings no longer ride the meta merge or
+  the validate stream — the merger's dedup dissolved 28 deterministic
+  findings into one prose comment in a real-world run (RMI). They are
+  prepended fresh at assemble, provenance intact. Validate runs only when
+  LLM candidates exist (no checker-only screening pass).
+- **Wrap-up on infeasible plans** (7e review B4): when no continuation
+  plan is feasible at a replan checkpoint, the run records
+  `shortfallUsd` on the run state, marks never-started stages skipped,
+  and assembles the partial wrap-up report (report cleared for the
+  resumable top-up, mirroring the budget drain). Challenge and verify
+  replan checkpoints run regardless of whether a decision model is
+  bound; three verify sub-stage checkpoints (`verify/claims`, lenses,
+  artifacts) anchor Python's mid-stage replans.
+- **Committee ranking honored** (7e B2): claim verification keeps the
+  committee's importance order instead of re-sorting by coarse
+  importance (`n_claims` also feeds the budget stats before planning).
+- **Decision provider wired in the UI** (7e B6): a bound `decisionRole`
+  now constructs the decision provider and threads it into `runReview`
+  (fresh + resume); a missing pricing block degrades to zero pricing
+  instead of crashing. Strategy reflection propagates budget trips.
+- **Reasoning capability config** (7d review C1): `supportsReasoning`
+  is settable per role in settings (`roles.<role>.supportsReasoning`,
+  universal boolean-only rule) and reaches the provider construction —
+  previously it existed only as a provider class flag. Note: Python's
+  `llm.json_two_phase` `'always'/'never'` modes remain unported (auto
+  detection only).
+- **Two-phase repair fallthrough** (7d C2): an `LLMError` inside the
+  two-phase arms now falls through to the single repair replay (Python
+  try/except parity) instead of failing the call.
+- **Minor parity fixes** (7f review): `n_lenses` recorded on budget
+  stats; lean-finish residual no longer forces `synthesis: false`
+  (matches upstream `residual_frontier`); a synthesis budget trip now
+  drains the run like every other stage instead of degrading silently.
+
 ### Stage 7f — yield upgrades: checker findings merge, synthesis, wider gates
 
 - **Checker findings join the meta + validator streams** (449174c):

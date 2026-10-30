@@ -75,10 +75,14 @@ spend or spikes demand it. Without a decision role configured the layer
 is fully dormant (labelled LLM fallbacks, unchanged call sequences).
 Claim-defense verdicts are batched (40 comments per call, anchored
 passages inline) so large comment sets stay checkable. Stage 7f raises
-the yield: deterministic checkers join the meta/validator streams, a
-lead-referee synthesis essay replaces the merger's overall feedback, and
-statistical-rigor + clarity lenses widen per-section coverage (deep
-plans re-run the defense gate over survivors).
+the yield: a lead-referee synthesis essay replaces the merger's overall
+feedback, and statistical-rigor + clarity lenses widen per-section
+coverage (deep plans re-run the defense gate over survivors). Stage 7R
+aligns the checker-findings flow with upstream e2ba304 (assemble-only,
+after the merger dissolved deterministic findings in a real run) and
+lands the 7d/7e review fixes: wrap-up-with-shortfall on infeasible
+plans, committee ranking honored end-to-end, per-role
+`supportsReasoning` settings, and decision-provider wiring in the UI.
 
 Literature grounding is **fail-soft**: a dead or CORS-blocked API degrades
 to a console warning and an empty result — it never fails the review run.
