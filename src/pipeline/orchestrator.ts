@@ -1376,12 +1376,23 @@ export async function* runReview(
         unitsDone += 1;
         const nowProgress: StageProgress = { unitsDone, unitsTotal: sections.length };
         if (res.kind === 'ok') {
-          const o = (res.value ?? {}) as Record<string, unknown>;
+          // fe463f2: models sometimes return the validated list bare instead
+          // of the documented {"validated": [...], "new_comments": [...]}
+          // envelope; 61f5822: skip non-dict payloads.
+          let o =
+            typeof res.value === 'object' && res.value !== null
+              ? (res.value as Record<string, unknown>)
+              : undefined;
+          if (Array.isArray(res.value)) {
+            o = { validated: res.value };
+          } else if (o === undefined) {
+            o = {};
+          }
           // kept: challenger verdicts that were not dropped
           const kept: ReviewComment[] = [];
           if (Array.isArray(o['validated'])) {
             for (const v of o['validated']) {
-              if (typeof v !== 'object' || v === null) continue;
+              if (typeof v !== 'object' || v === null || Array.isArray(v)) continue;
               const vo = v as Record<string, unknown>;
               if (vo['verdict'] === 'dropped') continue;
               const src =
@@ -1413,11 +1424,16 @@ export async function* runReview(
               }
             }
           }
-          // new_comments: hunter findings from this section
+          // new_comments: hunter findings from this section (61f5822:
+          // non-dict payloads skipped)
           const fresh: ReviewComment[] = [];
           if (Array.isArray(o['new_comments'])) {
-            for (const nc of o['new_comments'])
-              fresh.push(challengerComment(nc, sec.title, res.value));
+            for (const nc of o['new_comments']) {
+              if (typeof nc !== 'object' || nc === null || Array.isArray(nc)) continue;
+              fresh.push(
+                challengerComment(nc as Record<string, unknown>, sec.title, res.value),
+              );
+            }
           }
           addClaimed(kept);
           addClaimed(fresh);
@@ -1459,10 +1475,20 @@ export async function* runReview(
           'whole_paper_challenge',
         );
         if (wpRes.kind === 'ok') {
-          const o = (wpRes.value ?? {}) as Record<string, unknown>;
+          // fe463f2: bare validated list instead of the documented envelope;
+          // 61f5822: non-dict payloads skipped (Python parity).
+          let o =
+            typeof wpRes.value === 'object' && wpRes.value !== null
+              ? (wpRes.value as Record<string, unknown>)
+              : undefined;
+          if (Array.isArray(wpRes.value)) {
+            o = { validated: wpRes.value };
+          } else if (o === undefined) {
+            o = {};
+          }
           if (Array.isArray(o['validated'])) {
             for (const v of o['validated']) {
-              if (typeof v !== 'object' || v === null) continue;
+              if (typeof v !== 'object' || v === null || Array.isArray(v)) continue;
               const vo = v as Record<string, unknown>;
               if (vo['verdict'] === 'dropped') continue;
               const match = wpCandidates.find(
@@ -1491,10 +1517,16 @@ export async function* runReview(
             }
           }
           if (Array.isArray(o['new_comments'])) {
-            for (const nc of o['new_comments'])
+            for (const nc of o['new_comments']) {
+              if (typeof nc !== 'object' || nc === null || Array.isArray(nc)) continue;
               challengeValidated.push(
-                challengerComment(nc, 'Full manuscript', wpRes.value),
+                challengerComment(
+                  nc as Record<string, unknown>,
+                  'Full manuscript',
+                  wpRes.value,
+                ),
               );
+            }
           }
           yield* emit('challenge', 'running', 'whole-paper challenge done');
         } else if (wpRes.kind === 'budget') {

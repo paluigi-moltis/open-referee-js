@@ -275,7 +275,16 @@ export async function verifyClaims(init: {
     let comments: ReviewComment[] = [];
     if (res.kind === 'ok') {
       const raw = (res.value as { comments?: unknown } | null)?.['comments'];
-      if (Array.isArray(raw)) comments = raw.map((c) => normalizeComment(c, claim));
+      if (Array.isArray(raw)) {
+        // 61f5822: all list items coming from model JSON are filtered to
+        // dicts before use (Python drops non-dicts; so do we).
+        comments = raw
+          .filter(
+            (c): c is Record<string, unknown> =>
+              typeof c === 'object' && c !== null && !Array.isArray(c),
+          )
+          .map((c) => normalizeComment(c, claim));
+      }
       onEvent?.(
         { stage: 'verify', status: 'running', at: new Date().toISOString() },
         undefined,

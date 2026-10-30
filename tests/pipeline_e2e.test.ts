@@ -944,3 +944,131 @@ rest. The reported mean absolute error is 4.10 in the harder split.
     expect(detComments.map((c) => c.comment)).toEqual(['phantom']);
   });
 });
+
+describe('runReview malformed-envelope tolerance (fe463f2 + 61f5822)', () => {
+  it('whole-paper challenger returning a bare validated list still yields comments', async () => {
+    const anchor = 'We prove the main theorem in this paper';
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      j({
+        claims: [
+          {
+            id: 'cl001',
+            type: 'logical',
+            importance: 'central',
+            components: { statement: 's' },
+            anchor,
+            section: 'Introduction',
+          },
+        ],
+      }),
+      // claim worker (logical -> strong): one candidate
+      j({ comments: [{ quote: anchor, message: 'bare list candidate', score: 0.6 }] }),
+      // Intro challenger: normal envelope, drops nothing new
+      j({ validated: [], new_comments: [] }),
+      // Methods challenger
+      j({ validated: [], new_comments: [] }),
+      // whole-paper challenger: BARE LIST (fe463f2), with a non-dict item (61f5822)
+      j([
+        {
+          paragraph_anchor: anchor,
+          quote: anchor,
+          message: 'kept from bare list',
+          score: 0.7,
+        },
+        'a bare string item',
+        42,
+      ]),
+      j({ overall_feedback: 'ok' }),
+      // validator keeps everything
+      j({ validated: [0], rejected: [] }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({ items: [] }),
+    );
+    const { state } = await drain(
+      runReview({
+        doc: makeDoc(),
+        settings: makeSettings(),
+        providers: { strong, small },
+      }),
+    );
+    expect(state.stages['challenge']).toBe('done');
+    const report = state.report as import('../src/report/models').ReviewReport;
+    const msgs = report.comments.map((c) => c.comment);
+    expect(msgs).toContain('kept from bare list');
+    // the non-dict items never became comments
+    expect(msgs).not.toContain('a bare string item');
+  });
+
+  it('section challenger non-dict validated/new_comments items are skipped', async () => {
+    const anchor = 'We prove the main theorem in this paper';
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      j({
+        claims: [
+          {
+            id: 'cl001',
+            type: 'logical',
+            importance: 'central',
+            components: { statement: 's' },
+            anchor,
+            section: 'Introduction',
+          },
+        ],
+      }),
+      j({}),
+      j({ comments: [{ quote: anchor, message: 'survivor', score: 0.6 }] }),
+      // Intro challenger: validated carries non-dict junk; new_comments too
+      j({
+        validated: [
+          'garbage string',
+          7,
+          {
+            paragraph_anchor: anchor,
+            quote: anchor,
+            message: 'real one',
+            score: 0.8,
+            verdict: 'kept',
+          },
+        ],
+        new_comments: [
+          'junk',
+          {
+            paragraph_anchor: anchor,
+            quote: anchor,
+            message: 'fresh find',
+            score: 0.5,
+          },
+        ],
+      }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ overall_feedback: 'ok' }),
+      j({ validated: [0], rejected: [] }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({ items: [] }),
+    );
+    const { state } = await drain(
+      runReview({
+        doc: makeDoc(),
+        settings: makeSettings(),
+        providers: { strong, small },
+      }),
+    );
+    expect(state.stages['challenge']).toBe('done');
+    const report = state.report as import('../src/report/models').ReviewReport;
+    const msgs = report.comments.map((c) => c.comment);
+    expect(msgs).toContain('real one');
+    expect(msgs).toContain('fresh find');
+    expect(msgs).not.toContain('garbage string');
+    expect(msgs).not.toContain('junk');
+  });
+});
