@@ -407,7 +407,8 @@ export interface LedgerView {
     costUsd: number;
     callType: string;
   }[];
-  priceFor(key: string): PricingEntry;
+  /** Missing entry = unpriced (Python pricing dict membership); callers decide. */
+  priceFor(key: string): PricingEntry | undefined;
   totalCost(): number;
 }
 
@@ -470,7 +471,8 @@ export class BudgetHarness {
     const spec = this.specs[role];
     if (spec === undefined) return [0, 0]; // role not configured (e.g. no vision model)
     const p = this.ledger.priceFor(`${spec.provider}/${spec.model}`);
-    return [p.input, p.output];
+    // Unpriced (missing) entries are free, matching the ledger's estimateCost.
+    return [p?.input ?? 0, p?.output ?? 0];
   }
 
   private _cost(role: string, in_tok: number, out_tok: number): number {
@@ -1636,9 +1638,10 @@ export function ledgerView(
         callType: c.callType ?? 'other',
       }));
     },
-    priceFor(key: string): PricingEntry {
+    priceFor(key: string): PricingEntry | undefined {
       const tail = key.includes('/') ? key.slice(key.lastIndexOf('/') + 1) : key;
-      return pricing[key] ?? pricing[tail]!;
+      // Missing entry = unpriced (Python pricing dict membership semantics).
+      return pricing[key] ?? pricing[tail];
     },
     totalCost(): number {
       return ledger.totalCost();

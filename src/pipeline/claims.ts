@@ -30,6 +30,7 @@ export type CallJson = (
   role: 'strong' | 'small',
   system: string,
   user: string,
+  opts?: { callType?: string; maxTokens?: number },
 ) => Promise<CallResult>;
 
 /** The claim types the inventory may emit, mapped to the worker role. */
@@ -131,17 +132,29 @@ export function depthPresetFromTier(settings: AppSettings): Required<ReviewDepth
 }
 
 /** JSON-repair retry (Python RolePool.complete_json): one replay with the
- * repair suffix when the first reply fails to parse. */
+ * repair suffix when the first reply fails to parse. `callType` tags both
+ * attempts for the budget harness (Stage 7c). */
 export async function callJsonWithRepair(
   callJson: CallJson,
   role: 'strong' | 'small',
   system: string,
   user: string,
+  callType?: string,
 ): Promise<CallResult> {
-  const res = await callJson(role, system, user);
+  const res = await callJson(
+    role,
+    system,
+    user,
+    callType !== undefined ? { callType } : undefined,
+  );
   if (res.kind !== 'invalid_json') return res;
   const repairUser = `${user}\n\nYour previous reply was not valid JSON. Reply again with ONLY the required JSON object, no prose, no code fences.`;
-  return callJson(role, system, repairUser);
+  return callJson(
+    role,
+    system,
+    repairUser,
+    callType !== undefined ? { callType } : undefined,
+  );
 }
 
 export interface ClaimProgress {

@@ -66,6 +66,20 @@ export interface RunState {
   docData?: unknown;
   /** True when any stage failed or was skipped: the report is incomplete. */
   partial: boolean;
+  /**
+   * Persisted budget state (Stage 7c; Python state.plan + state.ledger_calls):
+   * the harness's current plan and every booked call record, so a resumed
+   * run keeps its spend accounting and continues from the failure point
+   * after a top-up (budget raise).
+   */
+  plan?: unknown;
+  ledgerCalls?: {
+    role: string;
+    callType: string;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+  }[];
   /** ISO 8601 timestamps. */
   startedAt: string;
   updatedAt: string;

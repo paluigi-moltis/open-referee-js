@@ -9,11 +9,8 @@
  * cannot be located are dropped (hallucination guard); no severity/defense/
  * validation gating applies (nothing here is a finding).
  *
- * DIVERGENCE (documented, catch-up 7c): Python gates the stage on
- * `plan_knobs().copyedit` and `budget_allows('copyedit')` — both live in
- * the budget harness. Pre-7c the stage is always-on; the knob checks are
- * added in 7c. Only the global budget cap still propagates (via CallResult
- * kind 'budget', like the other stages).
+ * 7c: the Python gates (`plan_knobs().copyedit` + `budget_allows('copyedit')`)
+ * are wired in the orchestrator — closed in 7c (was: always-on pre-7c).
  */
 
 import type { Document } from '../ingestion/document';

@@ -87,7 +87,8 @@ class MockLedger {
     outputTokens: number,
   ): { callType: string; inputTokens: number; outputTokens: number; costUsd: number } {
     const p = this.priceFor(`${role}/${role === 'strong' ? 'm-strong' : 'm-small'}`);
-    const costUsd = (inputTokens * p.input + outputTokens * p.output) / 1_000_000;
+    const costUsd =
+      (inputTokens * (p?.input ?? 0) + outputTokens * (p?.output ?? 0)) / 1_000_000;
     const rec = {
       role,
       usage: { promptTokens: inputTokens, completionTokens: outputTokens },
@@ -737,6 +738,8 @@ describe('gates + spikes + yield', () => {
   });
 
   it('require_pricing hard-errors on unpriced configured models', () => {
+    // priceFor now defaults missing entries to free — the harness therefore
+    // detects unpriced models through an explicit pricing-map probe.
     const h = new BudgetHarness(
       ledgerView(new MockLedger(), { 'm-strong': { input: 3, output: 15 } }),
       SPECS,

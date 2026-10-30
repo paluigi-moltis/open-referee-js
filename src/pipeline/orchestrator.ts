@@ -26,6 +26,17 @@ import type { Document } from '../ingestion/document';
 import type { ChatMessage, ChatProvider, ModelSpec } from '../providers/base';
 import { LLMError } from '../providers/base';
 import { BudgetExceeded, UsageLedger } from '../providers/usage';
+import {
+  BudgetHarness,
+  BudgetInfeasible,
+  callMaxTokens,
+  CHARS_PER_TOKEN,
+  documentStatsFromDoc,
+  ledgerView,
+  planKnobsFromPreset,
+  PlanKnobs,
+  type ReviewPlan,
+} from './budget';
 import { appendEvent, saveRun } from '../runs/store';
 import type {
   CopyeditItem,
@@ -54,7 +65,7 @@ import {
 } from './prompts';
 import {
   defenseRound,
-  depthPreset,
+  depthPresetFromTier,
   callJsonWithRepair,
   runClaimInventory,
   verifyClaims,
@@ -136,6 +147,17 @@ export interface RunReviewOptions {
 
 /** Role name as used in settings.roles and ledger bookkeeping. */
 type Role = 'strong' | 'small';
+
+/** Resolved ModelSpec for a role from settings (module-level helper). */
+function specOf(settings: AppSettings, role: Role): ModelSpec {
+  const rc = settings.roles[role];
+  return {
+    provider: role,
+    model: rc.model,
+    temperature: rc.temperature ?? 0.2,
+    maxTokens: rc.maxTokens ?? 4096,
+  };
+}
 
 /** Result of one budget-checked JSON call (settled by `settle`). */
 export type CallResult =
@@ -369,6 +391,59 @@ export async function* runReview(
   }
   const ledger = new UsageLedger(settings.maxCostUsd, settings.pricing);
 
+  // ------------------------------------------------------- budget harness --
+  // Python run() step 1b `_init_budget`: the harness owns planning + spend
+  // tracking on top of the ledger. Preset tiers are uncapped (Python sets
+  // the ledger cap to infinity; the TS ledger cap is the user's
+  // maxCostUsd and the tier tracks estimate-only), 'auto' runs the
+  // deterministic planner against settings.budget.budgetUsd.
+  const tierRaw = (settings.budget?.depth ?? 'standard').toLowerCase().trim();
+  const isAuto = tierRaw === 'auto';
+  const planBudgetUsd = settings.budget?.budgetUsd ?? settings.maxCostUsd;
+  const harness = new BudgetHarness(
+    ledgerView(ledger, settings.pricing),
+    {
+      strong: {
+        provider: settings.roles.strong.provider,
+        model: settings.roles.strong.model,
+      },
+      small: {
+        provider: settings.roles.small.provider,
+        model: settings.roles.small.model,
+      },
+      ...(settings.roles.vision?.model
+        ? {
+            vision: {
+              provider: settings.roles.vision.provider,
+              model: settings.roles.vision.model,
+            },
+          }
+        : {}),
+    },
+    planBudgetUsd,
+    isAuto,
+  );
+  // Python _load_or_create_state resume: restore done-call counters + spend
+  // accounting from the persisted ledger records BEFORE any new call.
+  for (const rec of state.ledgerCalls ?? []) {
+    harness.note_record(rec);
+  }
+  if (state.plan) {
+    // A raised budget resumes with the restored plan at the NEW ceiling.
+    harness.set_plan(
+      { ...(state.plan as ReviewPlan), budget_usd: planBudgetUsd },
+      'restored-resume',
+    );
+  }
+  /** Per-call projected cost (Python ledger.check_budget). */
+  const projectedCallCost = (role: Role, system: string, user: string): number => {
+    const s = specOf(settings, role);
+    const pricing = settings.pricing[s.model];
+    const estIn = (system.length + user.length) / CHARS_PER_TOKEN;
+    const estOut = Math.min(s.maxTokens, Math.max(1000, estIn / 4));
+    return pricing ? (estIn * pricing.input + estOut * pricing.output) / 1_000_000 : 0;
+  };
+
   await saveRun(state);
 
   /**
@@ -408,7 +483,54 @@ export async function* runReview(
       copyeditItems: artifacts.copyeditItems,
     };
     let budgetError: BudgetExceeded | undefined;
-    const preset = depthPreset(settings.review);
+    // Python plan_knobs(): harness plan when present, else the tier preset.
+    // 7c closes the old divergence: the tier now FEEDS the preset, user
+    // overrides still win (depthPresetFromTier).
+    const tierPreset = planKnobsFromPreset(
+      (() => {
+        const p = depthPresetFromTier(settings);
+        return {
+          max_claims: p.maxClaims,
+          per_section_lenses: p.perSectionLenses,
+          whole_paper_passes: p.wholePaperPasses,
+          defense_round: p.defenseRound,
+          max_artifacts: p.maxArtifacts,
+          recompute: p.recompute,
+          verify_passes: p.verifyPasses,
+          claim_routing: p.claimRouting,
+          output_budget: p.outputBudget,
+          synthesis: p.synthesis,
+          copyedit: p.copyedit,
+          defense_second_round: p.defenseSecondRound,
+        };
+      })(),
+    );
+    let planKnobs: PlanKnobs = tierPreset;
+    if (isAuto) {
+      // Python _init_budget auto branch: deterministic preflight plan (free).
+      // Doc stats first (the dominant cost driver).
+      harness.stats = documentStatsFromDoc(doc);
+      if (harness.plan === undefined) {
+        try {
+          harness.require_pricing();
+          const plan = harness.deterministic_plan('preflight');
+          harness.set_plan(plan, 'preflight-v0');
+        } catch (err) {
+          if (err instanceof BudgetInfeasible) {
+            // Python raises before any model call; surface as a failed run.
+            throw err;
+          }
+          // PricingError degrades to preset tracking in Python only for
+          // preset modes; auto mode re-raises. Keep parity: rethrow.
+          throw err;
+        }
+      }
+      planKnobs = harness.plan?.knobs ?? tierPreset;
+    } else if (harness.plan === undefined) {
+      // Preset mode: estimate-only tracking plan (uncapped by design).
+      harness.stats = documentStatsFromDoc(doc);
+      harness.set_plan(harness.preset_plan(tierPreset, tierRaw), 'preset-tracking');
+    }
     /** challenge-stage output (validated + new_comments), feeding meta. */
     const challengeValidated: ReviewComment[] = artifacts.challenge ?? [];
 
@@ -420,16 +542,6 @@ export async function* runReview(
     // a persisted docData snapshot must not duplicate artifacts).
     if (doc.theorems.length === 0) doc.theorems = extractTheorems(doc);
     if (doc.tables.length === 0) doc.tables = extractTables(doc);
-
-    const spec = (role: Role): ModelSpec => {
-      const rc = settings.roles[role];
-      return {
-        provider: role,
-        model: rc.model,
-        temperature: rc.temperature ?? 0.2,
-        maxTokens: rc.maxTokens ?? 4096,
-      };
-    };
 
     /** Persist + fan out one stage transition; yields it back to the caller. */
     async function* emit(
@@ -447,7 +559,23 @@ export async function* runReview(
 
     const manuscript = doc.fullText().slice(0, MAX_MANUSCRIPT_CHARS);
 
-    /** Persist the per-stage artifact map + doc snapshot. */
+    /**
+     * Python `_sync_budget_to_state`: persist plan + ledger records so a
+     * resumed run keeps its spend accounting and a raised budget (top-up)
+     * continues from the failure point.
+     */
+    function syncBudgetToState(): void {
+      state.plan = harness.plan ? JSON.parse(JSON.stringify(harness.plan)) : undefined;
+      state.ledgerCalls = ledger.calls.map((c) => ({
+        role: c.role,
+        callType: c.callType,
+        inputTokens: c.usage.promptTokens,
+        outputTokens: c.usage.completionTokens,
+        costUsd: c.costUsd,
+      }));
+    }
+
+    /** Persist the per-stage artifact map + doc snapshot + budget state. */
     async function syncArtifacts(): Promise<void> {
       state.artifacts = {
         triage: artifacts.triage,
@@ -467,6 +595,7 @@ export async function* runReview(
         copyeditItems: artifacts.copyeditItems,
       };
       state.docData = documentToData(doc!);
+      syncBudgetToState();
       await saveRun(state);
     }
 
@@ -495,20 +624,25 @@ export async function* runReview(
       );
     }
 
-    /** One budget-checked, usage-recorded, JSON-parsed completion. */
+    /**
+     * One budget-checked, usage-recorded, JSON-parsed completion.
+     * `callType` keys the budget harness's per-phase accounting (Python
+     * complete_json(call_type=...)); `maxTokens` overrides the role default
+     * per call (Python complete_json(max_tokens=...), Stage 7c meta scaling).
+     */
     async function callJson(
       role: Role,
       system: string,
       user: string,
+      opts?: { callType?: string; maxTokens?: number },
     ): Promise<CallResult> {
-      const s = spec(role);
+      const callType = opts?.callType ?? 'other';
+      const s = {
+        ...specOf(settings, role),
+        ...(opts?.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+      };
       // Budget check BEFORE the call; unpriced models project 0.
-      const pricing = settings.pricing[s.model];
-      const estIn = (system.length + user.length) / 3;
-      const estOut = Math.min(s.maxTokens, Math.max(1000, estIn / 4));
-      const projected = pricing
-        ? (estIn * pricing.input + estOut * pricing.output) / 1_000_000
-        : 0;
+      const projected = projectedCallCost(role, system, user);
       try {
         ledger.checkBudget(projected);
       } catch (err) {
@@ -526,7 +660,15 @@ export async function* runReview(
         if (err instanceof LLMError) return { kind: 'llm_error', error: err };
         throw err;
       }
-      ledger.record(s.model, role, resp);
+      const rec = ledger.record(s.model, role, resp, callType);
+      // Python RolePool feeds every booked record to the harness (empirical
+      // unit costs + done counters + spike detection live there).
+      harness.note_record({
+        callType: rec.callType,
+        inputTokens: rec.usage.promptTokens,
+        outputTokens: rec.usage.completionTokens,
+        costUsd: rec.costUsd,
+      });
       try {
         return { kind: 'ok', value: extractJson(resp.content) };
       } catch {
@@ -569,6 +711,7 @@ export async function* runReview(
         'strong',
         triageSystem,
         triagePrompt(doc.title, manuscript),
+        { callType: 'triage' },
       );
       {
         const keep = yield* settle('triage', triageRes, async (v) => {
@@ -666,7 +809,9 @@ export async function* runReview(
       // The whole survey stage fails (and marks the run partial) only on an
       // LLM error from the surveyor itself, mirroring Python `_stage_or_resume`
       // re-raising LLMError; network degradation below never fails the run.
-      const surveyRes = await callJson('small', surveySystem, renderPack(pack, 30));
+      const surveyRes = await callJson('small', surveySystem, renderPack(pack, 30), {
+        callType: 'surveyor',
+      });
       const keep = yield* settle('survey', surveyRes, async (v) => {
         const survey = (v ?? {}) as Record<string, unknown>;
         // 1-based index mapping onto the deduped pack items.
@@ -826,13 +971,20 @@ export async function* runReview(
         });
       }
 
-      // 3b. per-section lenses (Python `_lenses_for` + `_reviewable_sections`)
-      if (preset.perSectionLenses) {
+      // 3b. per-section lenses (Python `_lenses_for` + `_reviewable_sections`);
+      // gated by the plan's per_section_lenses knob (plan_knobs in auto).
+      if (planKnobs.per_section_lenses) {
         const lenses = lensesFor(artifacts.triage ?? {});
         const sections = reviewableSections(doc);
         const lensTotal = sections.length * lenses.length;
         for (const lens of lenses) {
           for (const sec of sections) {
+            // Python run_lens_section: budget_allows gate before the call.
+            if (!harness.allow_call('lens_section')) {
+              harness.note_gate_stop('lens_section', 1);
+              unitsDone += 1;
+              continue;
+            }
             const res = await callJsonWithRepair(
               callJson,
               'small',
@@ -842,6 +994,7 @@ export async function* runReview(
                 '',
                 sec.text.slice(0, MAX_SECTION_CHARS),
               ),
+              'lens_section',
             );
             unitsDone += 1;
             const nowProgress: StageProgress = { unitsDone, unitsTotal: lensTotal };
@@ -875,12 +1028,13 @@ export async function* runReview(
       }
 
       // 3c. whole-paper coherence pass (strong model, full text)
-      if (!budgetError && preset.wholePaperPasses) {
+      if (!budgetError && planKnobs.whole_paper_passes) {
         const wpRes = await callJsonWithRepair(
           callJson,
           'strong',
           wholePaperVerifierSystem,
           wholePaperVerifierPrompt(doc.title, manuscript),
+          'whole_paper_verify',
         );
         if (wpRes.kind === 'ok') {
           const n = normalizeWorkerComments(wpRes.value, 'Full manuscript');
@@ -950,6 +1104,7 @@ export async function* runReview(
             // Python: json.dumps(cands, indent=1)[:20_000]
             JSON.stringify(cands, null, 1).slice(0, 20_000),
           ),
+          'section_challenger',
         );
         unitsDone += 1;
         const nowProgress: StageProgress = { unitsDone, unitsTotal: sections.length };
@@ -1034,6 +1189,7 @@ export async function* runReview(
             // Python: json.dumps(wp_candidates, indent=1)[:30_000]
             JSON.stringify(wpCandidates, null, 1).slice(0, 30_000),
           ),
+          'whole_paper_challenge',
         );
         if (wpRes.kind === 'ok') {
           const o = (wpRes.value ?? {}) as Record<string, unknown>;
@@ -1103,8 +1259,9 @@ export async function* runReview(
 
       // ------------------------------------------ challenge tail: defense --
       // Python parity: defense_round runs at the end of _challenge, so its
-      // output (not the raw candidates) feeds meta and validate.
-      if (!budgetError && preset.defenseRound && challengeValidated.length > 0) {
+      // output (not the raw candidates) feeds meta and validate. Gated by
+      // the plan's defense_round knob (7c).
+      if (!budgetError && planKnobs.defense_round && challengeValidated.length > 0) {
         yield* emit('challenge', 'running', 'defense gate');
         const gate = await defenseRound({
           callJson,
@@ -1228,6 +1385,13 @@ export async function* runReview(
         entries: bib.entries,
         in_text_issues: bib.in_text_issues,
       }).slice(0, 8000);
+      // Python `_meta`: the meta output budget scales with the merged
+      // comment count — max(call_max_tokens('meta', level), min(32768,
+      // 2000 + 130*n)) (closes the 7a "not scaled" divergence).
+      const metaMax = Math.max(
+        callMaxTokens('meta', planKnobs.output_budget) ?? 8192,
+        Math.min(32_768, 2_000 + 130 * challengeValidated.length),
+      );
       const metaRes = await callJson(
         'strong',
         metaSystem,
@@ -1239,6 +1403,7 @@ export async function* runReview(
           // Python _meta: sota_notes=(pack.field_hint or '')[:1500]
           (artifacts.survey?.fieldHint ?? '').slice(0, 1500),
         ),
+        { callType: 'meta', maxTokens: metaMax },
       );
       if (metaRes.kind === 'ok') {
         const v = metaRes.value;
@@ -1283,6 +1448,7 @@ export async function* runReview(
         'strong',
         validatorSystem,
         validatorPrompt(doc.title, manuscript, commentsJson, artifacts.overall),
+        { callType: 'validate' },
       );
       if (valRes.kind === 'ok') {
         const o = (valRes.value ?? {}) as Record<string, unknown>;
@@ -1316,36 +1482,48 @@ export async function* runReview(
       yield* emit('validate', 'skipped', 'no candidates to validate');
     }
 
-    // ------------------------------------------------------------ 6b. copyedit --
+    // ---------------------------------------------------------- 6b. copyedit --
     // Python 9b `_copyedit`: one SMALL language-mechanics pass; fail-soft ->
     // [] on any LLM/parse failure, budget propagates. The artifact persists
-    // BEFORE the done-emit so resume skips the re-call. Divergence (7c):
-    // Python's plan_knobs().copyedit + budget_allows('copyedit') gates are
-    // absent pre-7c — the stage is always-on here.
+    // BEFORE the done-emit so resume skips the re-call. 7c: the two Python
+    // gates are wired — `plan_knobs().copyedit` (knob off -> emit skipped,
+    // like Python's early return, which never marks the stage) and
+    // `budget_allows('copyedit')` (gate stop recorded, stage skipped).
     if (!budgetError && !skipIfDone('copyedit')) {
-      yield* emit('copyedit', 'running');
-      const copyJson: CallJson = (role, system, user) => callJson(role, system, user);
-      const copyRun = await runCopyEditStage({
-        callJson: copyJson,
-        doc,
-        manuscript,
-      });
-      if (copyRun.budget) budgetError = copyRun.budget;
-      // Persist the artifact (Python artifacts['copyedit_items']) BEFORE the
-      // terminal event — resume must find it or the annex re-calls.
-      artifacts.copyeditItems = copyRun.items;
-      await syncArtifacts();
-      if (copyRun.budget) {
-        yield* emit(
-          'copyedit',
-          'failed',
-          `budget cap reached: ${copyRun.budget.message}`,
-        );
-      } else if (copyRun.items.length === 0) {
-        // LLM failure or genuinely nothing to fix: never blocks the report.
-        yield* emit('copyedit', 'done', 'no copyedit items');
+      if (!planKnobs.copyedit) {
+        // Python: `if not plan_knobs().copyedit: return []` — no stage
+        // transition at all; the run's stage list just moves on.
+        yield* emit('copyedit', 'skipped', 'plan knobs exclude the copyedit annex');
+      } else if (!harness.allow_call('copyedit')) {
+        // Python: `if not budget_allows('copyedit'): note_gate_stop; return []`
+        harness.note_gate_stop('copyedit', 1);
+        yield* emit('copyedit', 'skipped', 'budget gate: copyedit skipped');
       } else {
-        yield* emit('copyedit', 'done', `${copyRun.items.length} language fixes`);
+        yield* emit('copyedit', 'running');
+        const copyJson: CallJson = (role, system, user, opts) =>
+          callJson(role, system, user, opts);
+        const copyRun = await runCopyEditStage({
+          callJson: copyJson,
+          doc,
+          manuscript,
+        });
+        if (copyRun.budget) budgetError = copyRun.budget;
+        // Persist the artifact (Python artifacts['copyedit_items']) BEFORE the
+        // terminal event — resume must find it or the annex re-calls.
+        artifacts.copyeditItems = copyRun.items;
+        await syncArtifacts();
+        if (copyRun.budget) {
+          yield* emit(
+            'copyedit',
+            'failed',
+            `budget cap reached: ${copyRun.budget.message}`,
+          );
+        } else if (copyRun.items.length === 0) {
+          // LLM failure or genuinely nothing to fix: never blocks the report.
+          yield* emit('copyedit', 'done', 'no copyedit items');
+        } else {
+          yield* emit('copyedit', 'done', `${copyRun.items.length} language fixes`);
+        }
       }
     }
 

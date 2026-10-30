@@ -10,6 +10,12 @@ export interface CallRecord {
   role: string;
   usage: Usage;
   costUsd: number;
+  /**
+   * Pipeline call type (Python CallRecord.call_type, default 'other'):
+   * the budget harness keys empirical unit costs and per-phase accounting
+   * on it. Stage 7c.
+   */
+  callType: string;
 }
 
 export class BudgetExceeded extends Error {
@@ -53,7 +59,12 @@ export class UsageLedger {
     }
   }
 
-  record(model: string, role: string, resp: LLMResponse): CallRecord {
+  record(
+    model: string,
+    role: string,
+    resp: LLMResponse,
+    callType = 'other',
+  ): CallRecord {
     // Clamp negative token counts from broken providers so a bad response
     // can never reduce the running cost.
     const usage: Usage = {
@@ -61,7 +72,7 @@ export class UsageLedger {
       completionTokens: Math.max(0, resp.usage.completionTokens),
     };
     const costUsd = this.estimateCost(model, usage);
-    const rec: CallRecord = { model, role, usage, costUsd };
+    const rec: CallRecord = { model, role, usage, costUsd, callType };
     this.calls.push(rec);
     return rec;
   }
