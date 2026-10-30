@@ -444,6 +444,11 @@ export async function* runReview(
     return pricing ? (estIn * pricing.input + estOut * pricing.output) / 1_000_000 : 0;
   };
 
+  // Persist the doc snapshot at run start: a budget drain (or any early
+  // exit) before the first syncArtifacts must still leave the run
+  // resumable — the doc snapshot is what the UI resume flow re-attaches.
+  state.docData = documentToData(doc);
+
   await saveRun(state);
 
   /**
@@ -1602,6 +1607,16 @@ export async function* runReview(
       generatedAt: new Date().toISOString(),
     };
     state.report = report;
+    // Python `wrapup_incomplete` marks the run INCOMPLETE (status), letting
+    // the resume endpoint accept it after a top-up. The TS resume gate is
+    // `report !== undefined` for skipped stages — a budget-drained run
+    // PERSISTS its report for the UI but must NOT pin the skipped stages:
+    // clear the report on drain so `skipIfDone`/`firstOpenStage` re-enter
+    // every not-completed stage on resume (resumable top-up, Stage 7c).
+    if (budgetError) {
+      state.report = undefined;
+    }
+    syncBudgetToState();
     await saveRun(state);
     yield* emit(
       'assemble',

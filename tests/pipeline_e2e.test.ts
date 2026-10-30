@@ -331,16 +331,17 @@ describe('runReview budget exhaustion', () => {
     );
 
     expect(state.partial).toBe(true);
-    const report = state.report as import('../src/report/models').ReviewReport;
-    expect(report.partial).toBe(true);
-    expect(report.comments).toHaveLength(0);
-    // triage ran; the claims budget check tripped before any inventory call
-    expect(strong.calls).toHaveLength(1);
+    // 7c: a budget-drained run persists its report for the UI but clears
+    // state.report before the final save — skipped stages must stay
+    // re-enterable for the resumable top-up. The partial report still
+    // reached the caller through the drained generator (assert on stages).
     expect(state.stages['claims']).toBe('failed');
     expect(state.stages['survey']).toBe('skipped');
     expect(state.stages['verify']).toBe('skipped');
     expect(state.stages['meta']).toBe('skipped');
     expect(state.stages['validate']).toBe('skipped');
+    // triage ran; the claims budget check tripped before any inventory call
+    expect(strong.calls).toHaveLength(1);
     // assemble still closes the run out (partial report), so it ends done
     expect(state.stages['assemble']).toBe('done');
   });
