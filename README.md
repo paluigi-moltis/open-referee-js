@@ -12,7 +12,7 @@ CORS-open literature APIs: OpenAlex, Crossref, Tavily, TinyFish).
 - Your API key never leaves the page and is never persisted — it lives in
   memory for the session only (opt-in encrypted storage arrives in Stage 2).
 
-## Status: Stages 1–6 + 7a + 7b + 7c complete
+## Status: Stages 1–6 + 7a–7d complete
 
 This is a working vertical slice of the port. It is **not** yet at full
 feature parity with the Python original. The pipeline is now:
@@ -50,6 +50,21 @@ a partial report, and raising the cap and resuming completes the review
 without re-calling completed stages. The copyedit annex now obeys its
 plan knob and the budget gate, and the meta review's output budget scales
 with the comment count.
+
+Stage 7d ports the **two-phase JSON call ladder** for reasoning models
+(phase-1 reasoning at a 24k budget, phase-2 JSON emission, low-effort
+emission retry before the free-form fallback; inert for non-reasoning
+providers), the seeded-error A/B prompt winners (inventory coverage,
+figure-text pair contract, meta preservation contract, evidence-based
+validator drop rules), provenance re-attachment after meta/validate
+re-emission, a scaled meta input cap, and a robustness batch: bare-list
+JSON envelopes tolerated, non-dict comment items skipped, `LLMError` on
+JSON-repair failure, retry logging (model / attempt / error / backoff),
+HTML-anchored headings + a heading-heuristic sectioning fallback,
+polite-pool `mailto=` emails for OpenAlex/Crossref, ContextPack rebuilt
+from its persisted artifact on resume, and challengers that respect the
+budget gate (candidates pass through unvalidated instead of draining the
+cap).
 
 Literature grounding is **fail-soft**: a dead or CORS-blocked API degrades
 to a console warning and an empty result — it never fails the review run.

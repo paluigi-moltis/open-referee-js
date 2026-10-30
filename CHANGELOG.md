@@ -4,6 +4,34 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7d — two-phase JSON, prompt A/B winners, robustness
+
+- **Two-phase JSON for reasoning models** (upstream 1515a7d/8a8bb77/
+  bfd2cdb): providers can declare `supportsReasoning` (default false);
+  reasoning models run a phase-1 reasoning pass at a 24k budget, then a
+  phase-2 JSON emission with the reasoning in context, with a
+  low-effort emission retry before the free-form fallback. The call
+  ladder (parse → retry → two-phase → one repair replay → `LLMError`)
+  lives in the orchestrator's `callJson`; `callJsonWithRepair` forwards.
+  Non-reasoning stubs are byte-for-byte unaffected (e2e queues pinned).
+- **Prompt A/B winners** (60d7779): inventory-coverage duties,
+  figure-text PAIR contract, META preservation contract, challenger
+  provenance-echo lines, evidence-based validator DROP contract — all
+  char-parity-pinned against origin/main `prompts.py`.
+- **Evidence-based validator gates + provenance re-attachment**
+  (9a40f13): `_reattach_provenance` port (quote > anchor >
+  difflib-similarity ≥ 0.6 tiers, never overwrites); the meta
+  comments-listing input cap scales as `max(100_000, 900·n)`.
+- **Robustness** (fe463f2, 61f5822, c628796, 814c895, e5eedfa, 7949c40,
+  ed1d8da, 81f5a61): bare-list JSON envelopes tolerated; non-dict items
+  skipped; JSON-repair failure raises `LLMError`; retry logging via a
+  collectible `setRetryLogger` sink (model, attempt, error, backoff);
+  HTML-anchored headings + heading-heuristic fallback in sectioning;
+  OpenAlex/Crossref polite-pool `mailto=` with an email env ladder;
+  ContextPack rebuilt from its persisted artifact on resume; challengers
+  respect the budget affordance gate (pass through unvalidated, gate
+  stops noted, defense tail still runs).
+
 ### Stage 7c — budget core (cost model, deterministic planner, per-phase spend)
 
 - **Full port of `pipeline/budget.py`** (`src/pipeline/budget.ts`): the
