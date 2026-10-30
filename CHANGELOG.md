@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning starts at 0.x until the Stage-8 release.
 
+### Stage 7e — decision models, committee planning, batched dm_defense
+
+- **Decision-model layer** (upstream b04cf21/eaa1a85): a `decision`
+  provider type speaking the `/v1/decisions` predicate/choice/score API
+  with typed answers + distributions, usage booked in the ledger, a
+  `FakeDecisionProvider` for tests, and an **optional** `decisionRole`
+  setting — absent means the DM layer is fully dormant and every stage
+  keeps its labelled-LLM fallback with byte-identical call sequences.
+- **Batched dm_defense** (4132423): verdict questions run
+  `DM_BATCH_COMMENTS = 40` comments per decide() call with the anchored
+  manuscript passage next to each defense; a per-batch failure upholds
+  only that batch; the budget learns `dm_defense`
+  (ceil(comments/40) calls, doubled on a second defense round).
+- **Committee planning** (auto mode): a ~10-point feasible-by-
+  construction frontier over depth × breadth; the strong LLM reflects
+  (no commit authority, never sums costs), the DM chooses a frontier
+  path and confirms it; a rejected confirmation triggers exactly one
+  more DM round that commits unconditionally. Replanning checkpoints
+  (stages, verify sub-stages, spike detection ≥8x) rebuild a residual
+  frontier from residual budget; single-option repairs apply with no
+  call; low-confidence DM choices escalate to one LLM consultation.
+  Nothing feasible mid-run wraps up an incomplete report with the
+  shortfall recorded (resumable drain, no exception through the UI).
+
 ### Stage 7d — two-phase JSON, prompt A/B winners, robustness
 
 - **Two-phase JSON for reasoning models** (upstream 1515a7d/8a8bb77/

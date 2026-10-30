@@ -12,7 +12,7 @@ CORS-open literature APIs: OpenAlex, Crossref, Tavily, TinyFish).
 - Your API key never leaves the page and is never persisted — it lives in
   memory for the session only (opt-in encrypted storage arrives in Stage 2).
 
-## Status: Stages 1–6 + 7a–7d complete
+## Status: Stages 1–6 + 7a–7e complete
 
 This is a working vertical slice of the port. It is **not** yet at full
 feature parity with the Python original. The pipeline is now:
@@ -65,6 +65,16 @@ polite-pool `mailto=` emails for OpenAlex/Crossref, ContextPack rebuilt
 from its persisted artifact on resume, and challengers that respect the
 budget gate (candidates pass through unvalidated instead of draining the
 cap).
+
+Stage 7e adds the **decision-model layer**: an optional `decision` role
+speaking the `/v1/decisions` API (typed predicate/choice/score answers)
+that a planning committee uses in auto mode — the strong LLM reflects on
+a feasible depth×breadth frontier, the decision model chooses and
+confirms a path, and mid-run checkpoints rebuild residual plans when
+spend or spikes demand it. Without a decision role configured the layer
+is fully dormant (labelled LLM fallbacks, unchanged call sequences).
+Claim-defense verdicts are batched (40 comments per call, anchored
+passages inline) so large comment sets stay checkable.
 
 Literature grounding is **fail-soft**: a dead or CORS-blocked API degrades
 to a console warning and an empty result — it never fails the review run.
