@@ -1,5 +1,6 @@
 import type { ChatMessage, LLMResponse, ModelSpec } from './base';
 import { LLMError } from './base';
+import { logRetry } from './retry';
 import type { RateLimiter } from './rate_limit';
 
 export interface OpenAICompatibleOptions {
@@ -103,7 +104,14 @@ export class OpenAICompatibleProvider {
           `network error: ${err instanceof Error ? err.message : String(err)}`,
         );
         if (attempt < this.maxRetries) {
-          await this.sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
+          const backoffMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
+          logRetry({
+            model: spec.model,
+            attempt: attempt + 1,
+            error: `LLMError: ${lastError.message.slice(0, 120)}`,
+            backoffMs,
+          });
+          await this.sleep(backoffMs);
           continue;
         }
         throw lastError;
@@ -118,7 +126,15 @@ export class OpenAICompatibleProvider {
         );
         if (attempt < this.maxRetries) {
           const raMs = retryAfterMs(res);
-          await this.sleep(raMs ?? RETRY_BASE_DELAY_MS * 2 ** attempt);
+          const backoffMs = raMs ?? RETRY_BASE_DELAY_MS * 2 ** attempt;
+          // 814c895: log every retry with model, attempt, error and backoff.
+          logRetry({
+            model: `${spec.model}`,
+            attempt: attempt + 1,
+            error: `LLMError: ${lastError.message.slice(0, 120)}`,
+            backoffMs,
+          });
+          await this.sleep(backoffMs);
           continue;
         }
         throw lastError;
