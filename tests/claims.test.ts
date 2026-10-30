@@ -15,6 +15,7 @@ import {
   type CallJson,
 } from '../src/pipeline/claims';
 import type { CallResult } from '../src/pipeline/orchestrator';
+import { metaCommentsJsonCap, reattachProvenance } from '../src/pipeline/orchestrator';
 import type { ReviewComment } from '../src/report/models';
 import type { AppSettings } from '../src/config/schema';
 import { DEFAULT_SETTINGS } from '../src/config/schema';
@@ -671,5 +672,79 @@ describe('passageFor', () => {
     const doc = makeDoc();
     expect(passageFor(doc, '')).toBeNull();
     expect(passageFor(doc, 'not present anywhere at all')).toBeNull();
+  });
+});
+
+// ------------------------------------------- provenance re-attachment (7d) --
+// Pin of Python test_reattach_provenance_matching_tiers (9a40f13): exact
+// normalized quote wins, anchor match second, title+message similarity third;
+// existing provenance is never overwritten; unmatched comments stay untagged.
+
+describe('reattachProvenance matching tiers', () => {
+  it('exact quote, then anchor, then similarity; never overwrites', () => {
+    const sources = [
+      {
+        title: 'Bad total',
+        quote: 'the total is 480 items',
+        paragraph_anchor: 'Table 1 shows counts.',
+        provenance: 'deterministic',
+      },
+      {
+        title: 'Unproven theorem',
+        quote: 'every widget is stable',
+        paragraph_anchor: 'Theorem 1 states stability.',
+        provenance: 'claim_verify 2-of-2',
+      },
+      {
+        title: 'Sign error in Lemma 2',
+        quote: '',
+        paragraph_anchor: '',
+        message: 'The inequality direction flips under the stated assumptions.',
+        provenance: 'claim_verify 1-of-2 + arbitrated',
+      },
+    ];
+    const final: Record<string, unknown>[] = [
+      // exact quote match (whitespace drift tolerated by _norm)
+      { title: 'reworded', quote: 'The  total is 480 items' },
+      // anchor match
+      {
+        title: 'reworded 2',
+        quote: '',
+        paragraph_anchor: 'Theorem 1 states stability.',
+      },
+      // only similarity can find this one (message nearly identical)
+      {
+        title: 'Sign error in Lemma 2 (adjusted)',
+        quote: '',
+        paragraph_anchor: '',
+        message: 'The inequality direction flips under the stated assumptions here.',
+      },
+      // nothing matches, and one that already has provenance
+      { title: 'orphan' },
+      { title: 'keep me', quote: 'x', provenance: 'already-there' },
+    ];
+    reattachProvenance(final, sources);
+    expect(final[0]!['provenance']).toBe('deterministic');
+    expect(final[1]!['provenance']).toBe('claim_verify 2-of-2');
+    expect(final[2]!['provenance']).toBe('claim_verify 1-of-2 + arbitrated');
+    expect('provenance' in final[3]!).toBe(false);
+    expect(final[4]!['provenance']).toBe('already-there');
+  });
+
+  it('no provenance-bearing sources: no-op', () => {
+    const final: Record<string, unknown>[] = [{ title: 'x' }];
+    reattachProvenance(final, [{ title: 'y' }]);
+    expect('provenance' in final[0]!).toBe(false);
+  });
+});
+
+// ------------------------------------------------- meta input cap (7d) --
+// Python: json.dumps(merged, indent=1)[: max(100_000, 900 * n_comments)] —
+// the 7c review P3 divergence (fixed TS 60_000 slice) closes here.
+
+describe('meta input cap scales with comment count', () => {
+  it('uses max(100_000, 900*n) — above and below the static floor', () => {
+    expect(metaCommentsJsonCap(10)).toBe(100_000);
+    expect(metaCommentsJsonCap(200)).toBe(180_000);
   });
 });

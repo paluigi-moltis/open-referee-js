@@ -73,6 +73,7 @@ import {
 } from './claims';
 import { extractJson } from './json';
 import { normalizeText } from '../ingestion/document';
+import { similarityRatio } from '../util/sequence_matcher';
 import {
   documentFromData,
   documentToData,
@@ -210,6 +211,73 @@ function reviewableSections(doc: Document): { title: string; text: string }[] {
 /** Python `_norm(t)[:120]`: normalized anchor prefix used for claim matching. */
 function normPrefix(t: string): string {
   return normalizeText(t).toLowerCase().slice(0, 120);
+}
+
+/** Python `_similar_comments` (claims.py): title+message overlap >= 0.6 ratio. */
+function similarComments(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  const ta = normalizeText(
+    `${String(a['title'] ?? '')} ${String(a['message'] ?? '')}`,
+  ).toLowerCase();
+  const tb = normalizeText(
+    `${String(b['title'] ?? '')} ${String(b['message'] ?? '')}`,
+  ).toLowerCase();
+  if (!ta || !tb) return false;
+  return similarityRatio(ta, tb) >= 0.6;
+}
+
+/** Python `_meta` comments-listing cap (9a40f13): max(100_000, 900 * n). */
+export function metaCommentsJsonCap(nComments: number): number {
+  return Math.max(100_000, 900 * nComments);
+}
+
+/**
+ * Python `_reattach_provenance` (9a40f13): deterministically re-attach
+ * provenance that model re-emissions dropped. The meta merger and the
+ * validator rebuild every comment dict per the JSON comment schema, which has
+ * no provenance field — so multi-pass badges ("claim_verify 2-of-2") and the
+ * deterministic/recompute tags never reached the report. Matching is
+ * mechanical: exact normalized quote/anchor keys first, then the difflib
+ * title+message similarity the claim engine already uses. Only fills gaps;
+ * never overwrites.
+ */
+export function reattachProvenance(finalComments: unknown[], sources: unknown[]): void {
+  const indexed = sources.filter(
+    (s): s is Record<string, unknown> =>
+      typeof s === 'object' &&
+      s !== null &&
+      Boolean((s as Record<string, unknown>)['provenance']),
+  );
+  if (indexed.length === 0) return;
+  const byQuote = new Map<string, string>();
+  const byAnchor = new Map<string, string>();
+  for (const s of indexed) {
+    const q = normPrefix(String(s['quote'] ?? ''));
+    const a = normPrefix(String(s['paragraph_anchor'] ?? ''));
+    if (q && !byQuote.has(q)) byQuote.set(q, String(s['provenance']));
+    if (a && !byAnchor.has(a)) byAnchor.set(a, String(s['provenance']));
+  }
+  for (const c of finalComments) {
+    if (typeof c !== 'object' || c === null) continue;
+    const co = c as Record<string, unknown>;
+    if (co['provenance']) continue;
+    const q = normPrefix(String(co['quote'] ?? ''));
+    const a = normPrefix(String(co['paragraph_anchor'] ?? ''));
+    if (q && byQuote.has(q)) {
+      co['provenance'] = byQuote.get(q);
+    } else if (a && byAnchor.has(a)) {
+      co['provenance'] = byAnchor.get(a);
+    } else {
+      for (const s of indexed) {
+        if (similarComments(co, s)) {
+          co['provenance'] = String(s['provenance']);
+          break;
+        }
+      }
+    }
+  }
 }
 
 /** Python `_anchor_in`: the anchor's first 120 normalized chars appear in text. */
@@ -1399,8 +1467,14 @@ export async function* runReview(
     // -------------------------------------------------------------- 5. meta --
     if (!budgetError && !skipIfDone('meta')) {
       yield* emit('meta', 'running');
-      // Python: json.dumps(validated, indent=1)[:60_000]
-      const commentsJson = JSON.stringify(challengeValidated, null, 1).slice(0, 60_000);
+      // Python: json.dumps(merged, indent=1)[: max(100_000, 900 * n_comments)]
+      // (9a40f13: the preservation contract keeps every distinct finding, so
+      // both the input listing and the re-emitted output scale with comment
+      // count — static caps truncated large merges mid-JSON).
+      const commentsJson = JSON.stringify(challengeValidated, null, 1).slice(
+        0,
+        metaCommentsJsonCap(challengeValidated.length),
+      );
       // Python `_meta` L619-624: bib_summary rides into the meta prompt.
       const bib = artifacts.bibliography ?? emptyAudit();
       const bibSummary = JSON.stringify({
@@ -1597,8 +1671,14 @@ export async function* runReview(
     // They are NOT report comments through meta/validate (Python keeps them
     // out of meta's merge to avoid the RMI dedup collapse) but become
     // anchored report comments here.
-    const finalComments: ReviewComment[] = [...checkerComments(state), ...validated];
-    const anchored: ReviewComment[] = finalComments.map((c, i) => {
+    const finalComments: unknown[] = [...checkerComments(state), ...validated];
+    // provenance lost to meta/validator re-emission: re-attach from the
+    // verify-stage candidates + deterministic checker findings (9a40f13).
+    reattachProvenance(finalComments, [
+      ...((state.artifacts?.candidates ?? []) as unknown[]),
+      ...checkerComments(state),
+    ]);
+    const anchored: ReviewComment[] = (finalComments as ReviewComment[]).map((c, i) => {
       const anchor = c.paragraphAnchor ?? '';
       const quote = c.quote ?? '';
       const { blockId, confidence } = resolveAnchor(doc, anchor, quote);
