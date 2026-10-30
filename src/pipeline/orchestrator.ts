@@ -718,6 +718,17 @@ export async function* runReview(
      * `callType` keys the budget harness's per-phase accounting (Python
      * complete_json(call_type=...)); `maxTokens` overrides the role default
      * per call (Python complete_json(max_tokens=...), Stage 7c meta scaling).
+     *
+     * Stage 7d (Python complete_json two-phase logic, 1515a7d + 8a8bb77 +
+     * bfd2cdb): reasoning models can exhaust the output budget thinking
+     * before any JSON is emitted (empty content, completion ≈ cap). The
+     * escalation ladder — gated on the provider's supportsReasoning flag so
+     * non-reasoning stubs keep their exact call sequences — is:
+     *   single call -> same call under the low-effort control (cheap,
+     *   seconds) -> full two-phase (free-form reasoning at
+     *   jsonPhaseMaxTokens, then low-effort JSON emission fed the analysis)
+     *   -> parse-repair retry. Every phase books its ledger record under the
+     *   original call type so cost models self-calibrate.
      */
     async function callJson(
       role: Role,
@@ -742,9 +753,10 @@ export async function* runReview(
         { role: 'system', content: system },
         { role: 'user', content: user },
       ];
+      const provider = providers[role];
       let resp;
       try {
-        resp = await providers[role].complete(messages, s);
+        resp = await provider.complete(messages, s);
       } catch (err) {
         if (err instanceof LLMError) return { kind: 'llm_error', error: err };
         throw err;
@@ -758,10 +770,175 @@ export async function* runReview(
         outputTokens: rec.usage.completionTokens,
         costUsd: rec.costUsd,
       });
+      if (resp.content.trim() !== '') {
+        try {
+          return { kind: 'ok', value: extractJson(resp.content) };
+        } catch {
+          // non-empty but unparseable: Python skips the escalation ladder and
+          // goes straight to the repair replay below.
+        }
+      }
+      // Exhaustion signature: empty content (reasoning ate the budget). The
+      // whole escalation ladder is gated on the provider's supportsReasoning
+      // flag so non-reasoning stubs keep their exact call sequences (e2e
+      // queues stable); Python gates on the exhaustion signature alone.
+      if (resp.content.trim() === '' && provider.supportsReasoning) {
+        // Cheap escalation first: the same call under the low-effort control
+        // (survey + live probes: reasoning spiral short-circuits, valid JSON
+        // in seconds) before the expensive free-form phase (bfd2cdb).
+        const emissionEffort = 'low';
+        const lowSpec: ModelSpec = { ...s, reasoningEffort: emissionEffort };
+        let respLow;
+        try {
+          respLow = await provider.complete(messages, lowSpec);
+        } catch (err) {
+          if (err instanceof LLMError) return { kind: 'llm_error', error: err };
+          throw err;
+        }
+        const recLow = ledger.record(lowSpec.model, role, respLow, callType);
+        harness.note_record({
+          callType: recLow.callType,
+          inputTokens: recLow.usage.promptTokens,
+          outputTokens: recLow.usage.completionTokens,
+          costUsd: recLow.costUsd,
+        });
+        if (respLow.content.trim() !== '') {
+          try {
+            return { kind: 'ok', value: extractJson(respLow.content) };
+          } catch {
+            // fall through to the full two-phase attempt
+          }
+        }
+        // Full two-phase (1515a7d + 8a8bb77): phase 1 free-form reasoning at
+        // the raised 24k budget (json pressure off), phase 2 low-effort JSON
+        // emission fed the phase-1 analysis (last 8k chars).
+        const phase1 = await twoPhaseReasoning(
+          provider,
+          s,
+          role,
+          system,
+          user,
+          callType,
+          emissionEffort,
+        );
+        if (phase1 !== undefined) return phase1;
+      }
+      // Parse-repair retry (Python RolePool.complete_json tail): one replay
+      // with the repair suffix. On the FIRST call's raw reply if it was
+      // non-empty (Python: extract_json(resp.text) once more), else straight
+      // to the replay.
+      if (resp.content.trim() !== '') {
+        try {
+          return { kind: 'ok', value: extractJson(resp.content) };
+        } catch {
+          // continue to the repair replay
+        }
+      }
+      const repairUser = `${user}\n\nYour previous reply was not valid JSON. Reply again with ONLY the required JSON object, no prose, no code fences.`;
+      const repairMessages: ChatMessage[] = [
+        { role: 'system', content: system },
+        { role: 'user', content: repairUser },
+      ];
+      let resp2;
       try {
-        return { kind: 'ok', value: extractJson(resp.content) };
+        resp2 = await provider.complete(repairMessages, s);
+      } catch (err) {
+        if (err instanceof LLMError) return { kind: 'llm_error', error: err };
+        throw err;
+      }
+      const rec2 = ledger.record(s.model, role, resp2, callType);
+      harness.note_record({
+        callType: rec2.callType,
+        inputTokens: rec2.usage.promptTokens,
+        outputTokens: rec2.usage.completionTokens,
+        costUsd: rec2.costUsd,
+      });
+      try {
+        return { kind: 'ok', value: extractJson(resp2.content) };
       } catch {
-        return { kind: 'invalid_json' };
+        // never leak a raw decode error: stages catch LLMError and degrade
+        // gracefully instead of failing the whole run (c628796).
+        return {
+          kind: 'llm_error',
+          error: new LLMError(
+            `${s.provider}/${s.model} returned no parseable JSON even after a repair attempt (last reply started: ${JSON.stringify(resp2.content.slice(0, 120))})`,
+          ),
+        };
+      }
+    }
+
+    /**
+     * Python `_two_phase_json`: phase 1 free-form reasoning (json_mode off,
+     * max(callMaxTokens 24k, spec.maxTokens) budget), phase 2 low-effort
+     * emission with the analysis in context. Returns undefined when phase 1
+     * produced no analysis or the emission failed to parse (caller falls
+     * back to the single-call repair ladder). Both calls ledger-booked under
+     * the original call type.
+     */
+    async function twoPhaseReasoning(
+      provider: ChatProvider,
+      s: ModelSpec,
+      role: Role,
+      system: string,
+      user: string,
+      callType: string,
+      emissionEffort: string,
+    ): Promise<CallResult | undefined> {
+      // Python: p1_budget = max(int(cfg.llm.json_phase_max_tokens), spec.max_tokens)
+      // 8a8bb77 raised the default to 24576 (16k exhausted phase 1 as well).
+      const p1Budget = Math.max(24_576, s.maxTokens);
+      const p1Spec: ModelSpec = {
+        ...s,
+        callMaxTokens: p1Budget,
+        maxTokens: Math.max(p1Budget, s.maxTokens),
+      };
+      const phaseMessages: ChatMessage[] = [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ];
+      let resp1;
+      try {
+        resp1 = await provider.complete(phaseMessages, p1Spec);
+      } catch (err) {
+        if (err instanceof LLMError) return { kind: 'llm_error', error: err };
+        throw err;
+      }
+      const rec1 = ledger.record(p1Spec.model, role, resp1, callType);
+      harness.note_record({
+        callType: rec1.callType,
+        inputTokens: rec1.usage.promptTokens,
+        outputTokens: rec1.usage.completionTokens,
+        costUsd: rec1.costUsd,
+      });
+      const analysis = resp1.content.trim();
+      if (!analysis) return undefined;
+      const emitSystem = `${system}\n\nYou are given your own prior analysis of the task. Output ONLY the required JSON object now — no prose, no code fences, no reasoning.`;
+      const emitUser = `Your prior analysis:\n----\n${analysis.slice(-8000)}\n----\n\n${user}\n\nBased on the analysis above, output ONLY the required JSON now.`;
+      const emitSpec: ModelSpec = { ...s, reasoningEffort: emissionEffort };
+      let resp2;
+      try {
+        resp2 = await provider.complete(
+          [
+            { role: 'system', content: emitSystem },
+            { role: 'user', content: emitUser },
+          ],
+          emitSpec,
+        );
+      } catch (err) {
+        if (err instanceof LLMError) return { kind: 'llm_error', error: err };
+        throw err;
+      }
+      const rec2 = ledger.record(emitSpec.model, role, resp2, callType);
+      harness.note_record({
+        callType: rec2.callType,
+        inputTokens: rec2.usage.promptTokens,
+        outputTokens: rec2.usage.completionTokens,
+        costUsd: rec2.costUsd,
+      });
+      try {
+        return { kind: 'ok', value: extractJson(resp2.content) };
+      } catch {
+        return undefined; // fall through to the repair ladder
       }
     }
 

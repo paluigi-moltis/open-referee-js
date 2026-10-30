@@ -185,13 +185,27 @@ describe('runClaimInventory', () => {
     expect(claims).toEqual([]);
   });
 
-  it('retries with the repair suffix on invalid JSON then succeeds', async () => {
+  it('retries with the repair suffix on invalid JSON then succeeds (repair lives in callJson since 7d)', async () => {
+    // 7d: the repair replay moved INTO the orchestrator's callJson (Python
+    // RolePool.complete_json ladder). runClaimInventory forwards to the
+    // injected callJson once; a fake callJson demonstrates the old wrapper
+    // behavior to pin the repair suffix shape the orchestrator now emits.
     const { calls, fn } = scripted([
       { kind: 'invalid_json' },
       j({ claims: [{ components: { s: '1' } }] }),
     ]);
+    const repairWrap: CallJson = async (role, system, user, opts) => {
+      const res = await fn(role, system, user, opts);
+      if (res.kind !== 'invalid_json') return res;
+      return fn(
+        role,
+        system,
+        `${user}\n\nYour previous reply was not valid JSON. Reply again with ONLY the required JSON object, no prose, no code fences.`,
+        opts,
+      );
+    };
     const { claims } = await runClaimInventory({
-      callJson: fn,
+      callJson: repairWrap,
       doc: makeDoc(),
       triage: {},
       settings: makeSettings(),

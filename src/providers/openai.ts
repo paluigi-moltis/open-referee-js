@@ -66,19 +66,21 @@ export class OpenAICompatibleProvider {
 
   async complete(messages: ChatMessage[], spec: ModelSpec): Promise<LLMResponse> {
     await this.rateLimiter?.gate(this.baseUrl);
-    const body = JSON.stringify({
+    const body: Record<string, unknown> = {
       model: spec.model,
       messages,
       temperature: spec.temperature,
-      max_tokens: spec.maxTokens,
-    });
+      max_tokens: spec.callMaxTokens ?? spec.maxTokens,
+    };
+    if (spec.reasoningEffort) body.reasoning_effort = spec.reasoningEffort;
+    const bodyJson = JSON.stringify(body);
     const init: RequestInit = {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body,
+      body: bodyJson,
     };
 
     let lastError: LLMError | undefined;

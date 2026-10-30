@@ -494,20 +494,23 @@ describe('runReview malformed JSON', () => {
   it('fails the stage, sets partial, and still completes the run', async () => {
     const strong = new ScriptedProvider();
     strong.queue(
-      'this is not json at all', // triage: garbage — TS triage/meta/validate use plain callJson (no repair retry); Python repairs there too but TS hasn't since Stage 1 -> failed
+      'this is not json at all', // triage: garbage...
+      'no json here either', // ...repair replay: garbage -> triage failed (7d: repair lives in callJson)
       'no json {{{ here', // inventory: garbage
-      'again {{{ nope', // inventory repair retry: garbage -> claims failed
+      'again {{{ nope', // inventory repair replay: garbage -> claims failed
       // survey now runs on the SMALL role: garbage there too
       // challengers + whole-paper challenger run claimless
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
-      'also {{{ not json', // meta: garbage -> meta failed (no repair: meta uses callJson)
+      'also {{{ not json', // meta: garbage...
+      'still {{{ not json', // ...repair replay: garbage -> meta failed
       j({ validated: [], rejected: [] }), // validator — never reached (no candidates)
     );
     const small = new ScriptedProvider();
     small.queue(
-      'survey {{{ nope', // surveyor (SMALL): garbage -> survey failed
+      'survey {{{ nope', // surveyor (SMALL): garbage...
+      'still {{{ garbage', // ...repair replay: garbage -> survey failed
       j({ items: [] }), // copyedit annex (runs regardless; never blocks)
     );
     const settings = makeSettings();

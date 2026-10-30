@@ -131,9 +131,15 @@ export function depthPresetFromTier(settings: AppSettings): Required<ReviewDepth
   };
 }
 
-/** JSON-repair retry (Python RolePool.complete_json): one replay with the
- * repair suffix when the first reply fails to parse. `callType` tags both
- * attempts for the budget harness (Stage 7c). */
+/**
+ * JSON-repair retry (Python RolePool.complete_json): since Stage 7d the
+ * orchestrator's `callJson` carries the full Python ladder itself — parse
+ * attempt, reasoning escalation (empty content + supportsReasoning), one
+ * repair replay, LLMError when everything fails (c628796). This wrapper
+ * therefore just forwards; the distinct `kind: 'invalid_json'` outcome no
+ * longer occurs (it became an LLMError). Kept for the injected-callJson
+ * signature used across the stage modules (call sites + tests untouched).
+ */
 export async function callJsonWithRepair(
   callJson: CallJson,
   role: 'strong' | 'small',
@@ -141,18 +147,10 @@ export async function callJsonWithRepair(
   user: string,
   callType?: string,
 ): Promise<CallResult> {
-  const res = await callJson(
-    role,
-    system,
-    user,
-    callType !== undefined ? { callType } : undefined,
-  );
-  if (res.kind !== 'invalid_json') return res;
-  const repairUser = `${user}\n\nYour previous reply was not valid JSON. Reply again with ONLY the required JSON object, no prose, no code fences.`;
   return callJson(
     role,
     system,
-    repairUser,
+    user,
     callType !== undefined ? { callType } : undefined,
   );
 }
