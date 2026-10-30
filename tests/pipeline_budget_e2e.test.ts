@@ -138,9 +138,10 @@ function queueHead(strong: ScriptedProvider): void {
     }),
     // claim worker (logical -> strong)
     j({ comments: [] }),
-    // challengers: ONE reviewable section (Introduction; Methods text is
-    // under the 400-char reviewable floor -> "Full manuscript" fallback
-    // does NOT apply) + the whole-paper pass.
+    // challengers: e5eedfa — the parsed section list is a single degenerate
+    // section, so the heading-heuristic fallback splits the raw text into 2
+    // reviewable chunks + the whole-paper pass = 3 challenger calls.
+    j({ validated: [], new_comments: [] }),
     j({ validated: [], new_comments: [] }),
     j({ validated: [], new_comments: [] }),
   );
@@ -217,8 +218,9 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     // call sequence recomputed from the ACTUAL resume re-entry: NOTHING had
     // completed in attempt 1 (triage failed on the first projection), so the
     // full pipeline replays: triage, claims, worker, 3 challengers, meta on
-    // strong; surveyor, bibliography, copyedit on small.
-    expect(strong2.calls).toHaveLength(6);
+    // strong; surveyor, bibliography, copyedit on small. Challenger count
+    // is 2 section + 1 whole-paper under the e5eedfa fallback split.
+    expect(strong2.calls).toHaveLength(7);
     expect(small2.calls).toHaveLength(3);
   });
 

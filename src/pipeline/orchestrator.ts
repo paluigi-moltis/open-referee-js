@@ -188,8 +188,10 @@ interface Artifacts {
 }
 
 /**
- * Sections worth challenging: (title, text) pairs; falls back to one big
- * chunk. Mirrors Python `_reviewable_sections`.
+ * Sections worth challenging: (title, text) pairs. Mirrors Python
+ * `_reviewable_sections`: falls back to a heading-heuristic split when
+ * parsing produced no sections or a single degenerate one covering the whole
+ * document (plain-text conversions, e5eedfa); then one big chunk.
  */
 function reviewableSections(doc: Document): { title: string; text: string }[] {
   const out: { title: string; text: string }[] = [];
@@ -202,10 +204,94 @@ function reviewableSections(doc: Document): { title: string; text: string }[] {
       out.push({ title: s.title, text });
     }
   }
+  if (out.length <= 1) {
+    const split = splitByHeadings(doc.fullText());
+    if (split.length > out.length) return split;
+  }
   if (out.length === 0) {
     out.push({ title: 'Full manuscript', text: doc.fullText() });
   }
   return out;
+}
+
+// -------------------------------------------- heading-heuristic fallback --
+// Port of Python `_split_by_headings` (e5eedfa).
+
+const FALLBACK_MD_RE = /^#{1,3}\s+(\S.*)$/; // markdown
+const FALLBACK_NUM_RE = /^(?:\d{1,2}(?:\.\d+)*\.?|Appendix\s+[A-Z])\s+[A-Z].{2,120}$/; // numbered section lines
+const FALLBACK_KW_RE =
+  /^(?:abstract|references|bibliography|appendix|conclusions?)\s*$/i;
+const FALLBACK_CAPS_RE = /^[A-Z][A-Z0-9 :&-]{3,60}$/;
+const FALLBACK_MIN_CHARS = 400;
+const FALLBACK_MAX_SECTIONS = 20;
+
+/**
+ * Split full text into (title, chunk) pairs when no sections were parsed.
+ * Detects markdown headings, numbered section lines ('2.3 Methods'), keyword
+ * headings (Abstract/References/...) and short ALL-CAPS title lines; skips
+ * author-list style caps lines (commas, long). Chunks below the minimum
+ * length merge into the previous section.
+ */
+export function splitByHeadings(text: string): { title: string; text: string }[] {
+  const lines = text.split('\n');
+  const boundaries: { line: number; title: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const s = lines[i]!.trim();
+    if (s.length < 3 || s.length > 130) continue;
+    const md = FALLBACK_MD_RE.exec(s);
+    if (md) {
+      boundaries.push({ line: i, title: md[1]!.trim() });
+      continue;
+    }
+    if (FALLBACK_NUM_RE.test(s)) {
+      boundaries.push({ line: i, title: s });
+      continue;
+    }
+    if (FALLBACK_KW_RE.test(s)) {
+      boundaries.push({ line: i, title: titleCase(s) });
+      continue;
+    }
+    if (FALLBACK_CAPS_RE.test(s) && !s.includes(',') && s.split(/\s+/).length <= 8) {
+      boundaries.push({ line: i, title: s });
+    }
+  }
+  if (boundaries.length === 0) return [];
+
+  const chunks: string[][] = [];
+  const titles: string[] = [];
+  if (boundaries[0]!.line > 0) {
+    chunks.push(lines.slice(0, boundaries[0]!.line));
+    titles.push('Front matter');
+  }
+  for (let bi = 0; bi < boundaries.length; bi++) {
+    const { line: start, title } = boundaries[bi]!;
+    const end = bi + 1 < boundaries.length ? boundaries[bi + 1]!.line : lines.length;
+    chunks.push(lines.slice(start, end));
+    titles.push(title);
+  }
+
+  const out: { title: string; text: string }[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!.join('\n').trim();
+    if (!chunk) continue;
+    if (chunk.length < FALLBACK_MIN_CHARS && out.length > 0) {
+      const prev = out[out.length - 1]!;
+      out[out.length - 1] = { title: prev.title, text: `${prev.text}\n\n${chunk}` };
+    } else {
+      out.push({ title: titles[i]!, text: chunk });
+    }
+  }
+  while (out.length > FALLBACK_MAX_SECTIONS) {
+    const last = out.pop()!;
+    const prev = out[out.length - 1]!;
+    out[out.length - 1] = { title: prev.title, text: `${prev.text}\n\n${last.text}` };
+  }
+  return out;
+}
+
+/** Python `s.title()` for the keyword-heading branch. */
+function titleCase(s: string): string {
+  return s.replace(/\w\S*/g, (w) => w[0]!.toUpperCase() + w.slice(1).toLowerCase());
 }
 
 /** Python `_norm(t)[:120]`: normalized anchor prefix used for claim matching. */

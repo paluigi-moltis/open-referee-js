@@ -270,7 +270,6 @@ export async function verifyClaims(init: {
       definitions: defs.slice(0, 6000),
     });
     const res = await callJsonWithRepair(callJson, role, system, user, 'claim_verify');
-    // eslint-disable-next-line no-console
     if (res.kind !== 'ok' && res.kind !== 'budget') onWorkerError?.();
     let comments: ReviewComment[] = [];
     if (res.kind === 'ok') {
@@ -443,7 +442,6 @@ export async function defenseRound(init: {
     candidates,
     preset.maxParallelCalls,
     async (c): Promise<ReviewComment | null> => {
-      // eslint-disable-next-line no-console
       const anchor = c.paragraphAnchor || c.quote || '';
       const passage = passageFor(doc, anchor) ?? '(anchor not found in document)';
       const defense = await callJsonWithRepair(
