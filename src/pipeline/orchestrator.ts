@@ -86,6 +86,7 @@ import {
 } from './bibliography';
 import { resolveAnchor, sectionOfBlock } from '../report/anchor';
 import {
+  contextPackFromArtifact,
   newContextPack,
   normalizeTitleKey,
   renderPack,
@@ -639,6 +640,14 @@ export async function* runReview(
     if (artifacts.overall === '' && savedA.draftReview) {
       artifacts.overall = savedA.draftReview.overall;
       artifacts.recommendation = savedA.draftReview.recommendation;
+    }
+    // ed1d8da: resumed runs load stage artifacts as JSON — rebuild the
+    // ContextPack from its persisted artifact so every consumer (scout's
+    // items.extend, renderPack, meta's field_hint) sees a validated pack
+    // with all fields round-tripped.
+    if (artifacts.survey !== undefined) {
+      const rebuilt = contextPackFromArtifact(artifacts.survey);
+      if (rebuilt) artifacts.survey = rebuilt;
     }
     state.artifacts = {
       triage: artifacts.triage,
