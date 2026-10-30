@@ -11,6 +11,8 @@
 
 import { loadSettings, saveSettings } from '../config/storage';
 import type { AppSettings, ProviderType } from '../config/schema';
+import type { PricingEntry } from '../providers/usage';
+import { BudgetHarness, documentStatsFromDoc } from '../pipeline/budget';
 import {
   deleteSecret,
   getSecret,
@@ -414,7 +416,154 @@ function settingsPanel(settings: AppSettings, onChange: () => void): SettingsUiH
     );
   }
 
+  // ---- budget tier (Stage 7c) ----
+  // fast / standard / deep presets (Python USD figures verbatim) + auto
+  // (budget-driven planner). budgetUsd is the hard plan ceiling.
+  const TIER_LABELS: Record<string, string> = {
+    fast: 'Fast — cheap but substantive (est. ~$1-3)',
+    standard: 'Standard — hosted deep-review class (est. ~$3-8)',
+    deep: 'Deep — beyond deep-review (est. ~$10-25)',
+    auto: 'Auto — budget-driven planner (uses the cap below)',
+  };
+  const tierSel = el('select', {
+    id: 'budget-tier',
+    'aria-label': 'budget tier',
+  });
+  for (const tier of ['fast', 'standard', 'deep', 'auto']) {
+    const opt = document.createElement('option');
+    opt.value = tier;
+    opt.textContent = TIER_LABELS[tier]!;
+    if ((settings.budget?.depth ?? 'standard') === tier) opt.selected = true;
+    tierSel.appendChild(opt);
+  }
+  tierSel.addEventListener('change', () => {
+    settings.budget = { ...(settings.budget ?? {}), depth: tierSel.value };
+    saveSettings(settings);
+    onChange();
+  });
+  const budgetCap = el('input', {
+    type: 'number',
+    id: 'budget-cap',
+    min: '0',
+    step: '0.5',
+    placeholder: 'hard budget cap (USD)',
+    value:
+      settings.budget?.budgetUsd !== undefined ? String(settings.budget.budgetUsd) : '',
+    'aria-label': 'hard budget cap in USD',
+  });
+  budgetCap.addEventListener('change', () => {
+    const v = Number(budgetCap.value);
+    settings.budget = {
+      ...(settings.budget ?? {}),
+      budgetUsd: Number.isFinite(v) && budgetCap.value !== '' ? v : undefined,
+    };
+    saveSettings(settings);
+    onChange();
+  });
+  fieldset.appendChild(el('h2', {}, 'Budget'));
+  fieldset.appendChild(
+    el('div', { class: 'row' }, el('label', {}, 'Tier', tierSel, budgetCap)),
+  );
+
   return { root: fieldset, keyInputs, vaultIndicator };
+}
+
+// -------------------------------------------------------------------- budget --
+
+/**
+ * Projected-cost estimate for the CURRENT settings + doc (Stage 7c): the
+ * preset-tier estimate from the cost model — no LLM call, mirroring Python's
+ * /api/estimate. Returns null when the doc is absent (nothing ingested yet).
+ */
+export function projectedCost(
+  settings: AppSettings,
+  doc: Document | null,
+): { preset: string; estimates: Record<string, number> } | null {
+  if (!doc) return null;
+  const pricing: Record<string, PricingEntry> = {};
+  for (const role of ['strong', 'small', 'vision'] as const) {
+    const rc = settings.roles[role];
+    if (rc?.model && settings.pricing[rc.model])
+      pricing[rc.model] = settings.pricing[rc.model]!;
+  }
+  const specs: Record<string, { provider: string; model: string }> = {};
+  for (const role of ['strong', 'small', 'vision'] as const) {
+    const rc = settings.roles[role];
+    if (rc?.model) specs[role] = { provider: role, model: rc.model };
+  }
+  const harness = new BudgetHarness(
+    {
+      calls: [],
+      priceFor: (key) => pricing[key] ?? pricing[key.split('/').pop() ?? key],
+      totalCost: () => 0,
+    },
+    specs,
+    settings.budget?.budgetUsd ?? settings.maxCostUsd,
+    true,
+  );
+  harness.stats = documentStatsFromDoc(doc);
+  return {
+    preset: settings.budget?.depth ?? 'standard',
+    estimates: harness.preset_estimates(),
+  };
+}
+
+/** Spend-so-far line for the progress panel (7c). */
+export function spendSoFarLine(runState: RunState): string {
+  const calls = runState.ledgerCalls ?? [];
+  const spent = calls.reduce((s, c) => s + c.costUsd, 0);
+  const plan = runState.plan as
+    { budget_usd?: number; target_usd?: number } | undefined;
+  const cap = plan?.budget_usd;
+  const parts = [`Spent so far: $${spent.toFixed(4)}`];
+  if (cap !== undefined) parts.push(`of $${cap.toFixed(2)} cap`);
+  if (plan?.target_usd !== undefined)
+    parts.push(`(plan target $${plan.target_usd.toFixed(2)})`);
+  return parts.join(' ');
+}
+
+/**
+ * BudgetExceeded top-up affordance (7c): a "Top up & resume" control bound
+ * to an incomplete run. Raises the cap in settings and re-enters the
+ * pipeline via the existing resume machinery — the button just resumes.
+ */
+export function topUpControl(io: {
+  runState: RunState;
+  settings: AppSettings;
+  onResume: (raisedCapUsd: number) => void;
+}): HTMLElement {
+  const wrap = el('div', { id: 'budget-topup', class: 'budget-topup' });
+  wrap.appendChild(
+    el(
+      'p',
+      { class: 'budget-topup-note' },
+      'The budget cap stopped this run before the report completed. Completed stages are kept — raise the cap and resume from where it stopped.',
+    ),
+  );
+  const input = el('input', {
+    type: 'number',
+    min: '0',
+    step: '1',
+    id: 'topup-amount',
+    'aria-label': 'new budget cap in USD',
+    placeholder: 'new cap (USD)',
+  });
+  const btn = el('button', { type: 'button', id: 'topup-resume' }, 'Top up & resume');
+  btn.addEventListener('click', () => {
+    const v = Number(input.value);
+    if (!Number.isFinite(v) || v <= 0) {
+      input.setAttribute('aria-invalid', 'true');
+      return;
+    }
+    // Persist the raised cap (the run resumes under the new ceiling), then
+    // hand off to the resume flow.
+    io.settings.budget = { ...(io.settings.budget ?? {}), budgetUsd: v };
+    if (v > io.settings.maxCostUsd) io.settings.maxCostUsd = v;
+    saveSettings(io.settings);
+    io.onResume(v);
+  });
+  wrap.append(input, btn);
+  return wrap;
 }
 
 // -------------------------------------------------------------------- report --
@@ -766,7 +915,15 @@ export function mountApp(root: HTMLElement): void {
           state = next.value;
           break;
         }
+        // Spend-so-far in the progress panel (7c): append to each label tick.
+        if (state === undefined) {
+          // The pipeline persists ledger records as it goes; surface them.
+          const runs = await listRuns().catch(() => []);
+          const live = runs.find((r) => r.report === undefined && r.ledgerCalls);
+          if (live) progress.setSpend(spendSoFarLine(live));
+        }
       }
+      if (state) progress.setSpend(spendSoFarLine(state));
       progress.finish(
         state?.partial
           ? 'Run finished (partial report)'
@@ -782,6 +939,31 @@ export function mountApp(root: HTMLElement): void {
         merged.appendChild(
           reportView(report, state, merged.firstChild as HTMLElement | null),
         );
+        // BudgetExceeded -> top-up affordance (7c): a partial run whose
+        // assembled report stopped on the cap gets a resume control.
+        if (report.partial) {
+          const budgetDrained = (state.events ?? []).some(
+            (e) => e.detail !== undefined && e.detail.includes('budget cap reached'),
+          );
+          if (budgetDrained) {
+            merged.appendChild(
+              topUpControl({
+                runState: state,
+                settings,
+                onResume: () => {
+                  // Reload the persisted state and re-enter the pipeline —
+                  // the existing resume machinery does the rest.
+                  void (async () => {
+                    const saved = await loadRun(state!.runId);
+                    if (!saved) return;
+                    output.replaceChildren();
+                    runBtn.click();
+                  })();
+                },
+              }),
+            );
+          }
+        }
         output.replaceChildren(merged);
       }
     })()
