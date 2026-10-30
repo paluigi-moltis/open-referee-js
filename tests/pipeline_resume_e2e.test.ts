@@ -269,11 +269,12 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
     const strong3 = new ScriptedProvider();
     strong3.queue(
       // resume re-enters mid-challenge is impossible (artifact saved) —
-      // the ONLY strong calls are meta (+ synthesis, 7f) + validate over the
-      // merged stream (deterministic checker findings ride it since 7f)
+      // the ONLY strong calls are meta + synthesis (7f). e2ba304 (7R F1):
+      // validate no longer runs merely because checker findings exist —
+      // it needs LLM candidates, and challengeValidated here is empty, so
+      // validate SKIPS and no validator reply is consumed.
       j({ overall_feedback: 'resumed report', recommendation: 'minor revision' }),
       j({ overall_feedback: 'synth over resumed report' }),
-      j({ rejected: [], comments: [] }),
     );
     const small3 = new ScriptedProvider();
     small3.queue(
@@ -295,9 +296,10 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
       }),
     );
 
-    // earlier stages NOT re-called: meta + synthesis + validate only on
-    // strong; bibliography + copyedit only on small
-    expect(strong3.calls).toHaveLength(3);
+    // earlier stages NOT re-called: meta + synthesis only on strong
+    // (validate skips — no LLM candidates post-e2ba304); bibliography +
+    // copyedit only on small
+    expect(strong3.calls).toHaveLength(2);
     expect(small3.calls).toHaveLength(2);
     expect(small3.calls[0]!.messages[0]!.content).toBe(bibliographySystem);
     // meta got the bib summary wired into the bibSummary slot

@@ -766,6 +766,38 @@ export async function* runReview(
     }
     /** challenge-stage output (validated + new_comments), feeding meta. */
     const challengeValidated: ReviewComment[] = artifacts.challenge ?? [];
+    /**
+     * Python `self._claims_ranked` (7e review B2): true when the committee's
+     * decision model already importance-ranked the claims — verifyClaims must
+     * then keep that order instead of re-sorting by coarse importance.
+     */
+    let claimsRanked = false;
+    /**
+     * 7e review (B4): set when NO continuation plan is feasible (Python
+     * wrapup_incomplete would raise ReviewIncomplete). The stage walk then
+     * skips every remaining LLM-consuming stage directly to the partial
+     * assemble — the shortfall is recorded on the run state.
+     */
+    let noContinuation = false;
+    /**
+     * Deterministic checker comments (Python `_checker_comments`), consumed
+     * at assemble ONLY (e2ba304) — and at a mid-verify wrap-up, whose partial
+     * assemble mirrors the tail. LAZY: findings are populated inside verify,
+     * so the accessor must be called at assemble time, not before.
+     */
+    const checker = () => checkerComments(state);
+    /** Stage order for the wrap-up partial trail (same as the drain's). */
+    const WRAP_ORDER: Stage[] = [
+      'claims',
+      'survey',
+      'scout',
+      'verify',
+      'challenge',
+      'bibliography',
+      'meta',
+      'validate',
+      'copyedit',
+    ];
 
     // Python run() step 1 (post-ingest): extract theorem environments and
     // markdown-table artifacts — deterministic, free, and required by the
@@ -831,8 +863,11 @@ export async function* runReview(
       ? async (input, questions, callType) => {
           // Python: est_in = max(1, len(input) // 3); est_out = 1.
           const estIn = Math.max(1, Math.floor(input.length / 3));
-          const dr = settings.decisionRole!;
-          const pricing = settings.pricing[dr.model];
+          // Defensive read (7e review B6): a hand-edited settings object can
+          // carry a decider without the decisionRole block — treat a missing
+          // block/pricing entry as zero pricing instead of crashing.
+          const dr = settings.decisionRole;
+          const pricing = dr ? settings.pricing[dr.model] : undefined;
           const projected = pricing
             ? (estIn * pricing.input + 1 * pricing.output) / 1_000_000
             : 0;
@@ -843,10 +878,11 @@ export async function* runReview(
           }
           const result = await decider(input, questions, callType);
           if (result === undefined) return undefined;
+          const model = dr?.model ?? '';
           const rec = ledger.record(
-            dr.model,
+            model,
             'decision',
-            { content: '', usage: result.usage, model: dr.model },
+            { content: '', usage: result.usage, model },
             callType,
           );
           harness.note_record({
@@ -1095,18 +1131,28 @@ export async function* runReview(
         reason,
       );
       if (!applied) {
-        // Python: wrapup_incomplete. The TS pipeline's drain path (partial
-        // report + cleared persisted report) already yields the resumable
-        // top-up outcome; record the shortfall on the run state instead.
+        // 7e review (B4): Python calls `committee.wrapup_incomplete(self,
+        // pool, reason)` — synthesize the best-possible report, record the
+        // estimated shortfall on the run state (state.shortfall_usd) and
+        // return the wrap-up report through ReviewIncomplete. The TS
+        // pipeline keeps its resumable top-up contract (the drain clears the
+        // persisted report) but must still produce the wrap-up synthesis ONCE
+        // for the run, not per checkpoint — Python's first wrap-up raises
+        // ReviewIncomplete, which terminates the stage walk immediately.
+        // Gate: only the whole-stage 'verify'/'challenge' checkpoints wrap up
+        // (the sub-stage ones per-call-gate onward, matching upstream where
+        // the first infeasible checkpoint ends the run).
         state.partial = true;
+        state.shortfallUsd = harness.shortfall();
         syncBudgetToState();
         await saveRun(state);
         yield* emit(
           'challenge',
           'running',
           `no feasible continuation (${reason}); wrapping up with a partial report — ` +
-            `est. +$${harness.shortfall().toFixed(2)} needed`,
+            `est. +$${(state.shortfallUsd ?? 0).toFixed(2)} needed`,
         );
+        noContinuation = true;
       }
     }
 
@@ -1141,7 +1187,9 @@ export async function* runReview(
      * undefined when the essay is missing/empty (the caller keeps the
      * merger's overall — the pass is fail-soft, never fails the stage).
      */
-    async function runSynthesis(bib: BibliographyAudit): Promise<string | undefined> {
+    async function runSynthesis(
+      bib: BibliographyAudit,
+    ): Promise<string | BudgetExceeded | undefined> {
       const comments = artifacts.metaComments;
       const listing = comments
         .slice(0, 120)
@@ -1186,14 +1234,20 @@ export async function* runReview(
           maxTokens: callMaxTokens('synthesis', planKnobs.output_budget),
         },
       );
+      if (res.kind === 'budget') {
+        // 7f review (D3): Python lets BudgetExceeded drain through its run()
+        // handler (partial report, budgetError set, validate skipped) — the
+        // synthesis result must PROPAGATE, not degrade to the merger's own
+        // overall. Surfaced to the caller (the meta block assigns the global
+        // budgetError); the essay call result itself is a clean empty reply.
+        return res.error;
+      }
       if (res.kind !== 'ok') {
         console.warn(
           `synthesis pass degraded: ${
-            res.kind === 'budget'
-              ? `budget cap reached: ${res.error.message}`
-              : res.kind === 'llm_error'
-                ? res.error.message
-                : 'invalid JSON in model response'
+            res.kind === 'llm_error'
+              ? res.error.message
+              : 'invalid JSON in model response'
           }`,
         );
         return undefined;
@@ -1416,7 +1470,9 @@ export async function* runReview(
       try {
         resp1 = await provider.complete(phaseMessages, p1Spec);
       } catch (err) {
-        if (err instanceof LLMError) return { kind: 'llm_error', error: err };
+        // 7d review (C2): Python wraps phase 1 in try/except LLMError (logs +
+        // falls to the repair replay) — return undefined, not llm_error.
+        if (err instanceof LLMError) return undefined;
         throw err;
       }
       const rec1 = ledger.record(p1Spec.model, role, resp1, callType);
@@ -1441,7 +1497,9 @@ export async function* runReview(
           emitSpec,
         );
       } catch (err) {
-        if (err instanceof LLMError) return { kind: 'llm_error', error: err };
+        // 7d review (C2): Python's except LLMError falls to the repair replay
+        // — return undefined, not llm_error.
+        if (err instanceof LLMError) return undefined;
         throw err;
       }
       const rec2 = ledger.record(emitSpec.model, role, resp2, callType);
@@ -1508,6 +1566,12 @@ export async function* runReview(
       {
         const keep = yield* settle('triage', triageRes, async (v) => {
           artifacts.triage = (v ?? {}) as Record<string, unknown>;
+          // Python `_triage` tail: the exact lens count feeds the harness
+          // stats (7f review D1 — the count varies 3-6 with the triage).
+          harness.stats = {
+            ...harness.stats,
+            n_lenses: lensesFor(artifacts.triage ?? {}).length,
+          };
           await syncArtifacts();
         });
         if (!keep) {
@@ -1522,7 +1586,7 @@ export async function* runReview(
     }
 
     // ------------------------------------------------------------ 1b. claims --
-    if (!budgetError && !skipIfDone('claims')) {
+    if (!budgetError && !noContinuation && !skipIfDone('claims')) {
       yield* emit('claims', 'running');
       const claimJson: CallJson = (role, system, user) => callJson(role, system, user);
       const inv = await runClaimInventory({
@@ -1532,9 +1596,13 @@ export async function* runReview(
         settings,
       });
       if (inv.budget) budgetError = inv.budget;
-      // Python: the exact claim count is the dominant cost driver; claims are
-      // importance-ranked (decision model when available), then — in AUTO
+      // Python: the exact claim count is the dominant cost driver — it is
+      // recorded on the harness stats as a milestone BEFORE ranking and the
+      // committee (committee planning reads it via known_or_estimated_claims).
+      harness.stats = { ...harness.stats, n_claims: inv.claims.length };
+      // claims are importance-ranked (decision model when available), then — in AUTO
       // mode — the committee commits a frontier path for the run.
+      claimsRanked = false;
       if (decide !== undefined && inv.claims.length > 0 && isAuto) {
         try {
           inv.claims = await rankClaims(
@@ -1549,6 +1617,9 @@ export async function* runReview(
             },
             inv.claims,
           );
+          // Python `self._claims_ranked = True`: verifyClaims must keep the
+          // committee's order (no importance re-sort).
+          claimsRanked = true;
         } catch {
           // ranking degraded to inventory order inside rankClaims
         }
@@ -1620,7 +1691,7 @@ export async function* runReview(
     // from the surveyor call DO propagate (fail the stage / drain budget).
     // if (state.report !== undefined) — a skipped stage stays skipped only
     // when the run drained to a report; otherwise the run died mid-drain.
-    if (!budgetError && !skipIfDone('survey')) {
+    if (!budgetError && !noContinuation && !skipIfDone('survey')) {
       yield* emit('survey', 'running');
       const pack = newContextPack(doc.title);
       const triage = artifacts.triage ?? {};
@@ -1777,7 +1848,7 @@ export async function* runReview(
     // Per-claim workers first (the primary engine), then per-section lenses
     // (depth preset), then the whole-paper coherence pass. Mirrors Python
     // `_verify` minus artifact vision (deferred to Stage 5+).
-    if (!budgetError && !skipIfDone('verify')) {
+    if (!budgetError && !noContinuation && !skipIfDone('verify')) {
       yield* emit('verify', 'running');
       let unitsDone = 0;
       let stageBroken = false;
@@ -1818,6 +1889,7 @@ export async function* runReview(
           claims: artifacts.claims,
           settings,
           maxClaims: planKnobs.max_claims,
+          claimsRanked,
           onWorkerError: () => {
             stageBroken = true;
           },
@@ -1835,6 +1907,42 @@ export async function* runReview(
           unitsDone,
           unitsTotal: total,
         });
+      }
+      // Python `_verify`: a replan checkpoint after the claims sub-stage
+      // (7e review B5 — same helper as the whole-stage checkpoints). On
+      // wrap-up (noContinuation) the remaining sub-stages and the done emit
+      // are skipped: Python's ReviewIncomplete ends the walk immediately.
+      if (!budgetError && !noContinuation && isAuto && harness.plan !== undefined) {
+        yield* replanCheckpoint('verify/claims');
+      }
+      if (noContinuation) {
+        state.partial = true;
+        await saveRun(state);
+        yield* emit('verify', 'done', 'wrapped up early (no feasible continuation)');
+        // Assemble the partial wrap-up report NOW (mirrors the budget drain's
+        // assemble tail): mark never-started stages skipped, anchor the
+        // checker + verified comments, clear the report for the resumable
+        // top-up. Python's ReviewIncomplete carries the wrap-up report out
+        // of run(); the TS driver surfaces it as the drained partial.
+        for (const stage of WRAP_ORDER) {
+          if (stageStatus(state, stage) === 'pending') {
+            yield* emit(stage, 'skipped', 'no feasible continuation');
+          } else if (stage === 'challenge' && stageStatus(state, stage) === 'running') {
+            // The wrap-up emit above used 'challenge/running'; the stage
+            // never completes — close it as skipped for the resume gate.
+            yield* emit(stage, 'skipped', 'no feasible continuation');
+          }
+        }
+        // The partial report is NOT persisted: the resumable top-up contract
+        // (Stage 7c) requires the report cleared so `skipIfDone`/
+        // `firstOpenStage` re-enter every not-completed stage after the user
+        // raises the budget; the eventual assemble (post top-up) produces the
+        // anchored shape. The skip trail + shortfall on the state carry the
+        // wrap-up information for the UI.
+        syncBudgetToState();
+        await saveRun(state);
+        yield* emit('assemble', 'done', 'partial wrap-up report assembled');
+        return;
       }
 
       // 3b. per-section lenses (Python `_lenses_for` + `_reviewable_sections`);
@@ -1892,9 +2000,16 @@ export async function* runReview(
           if (budgetError) break;
         }
       }
+      // Python `_verify`: a replan checkpoint after the lens sub-stage
+      // (7e review B5). When the checkpoint wraps up (no continuation), the
+      // stage-level gates below see noContinuation and skip every remaining
+      // LLM-consuming pass.
+      if (!budgetError && !noContinuation && isAuto && harness.plan !== undefined) {
+        yield* replanCheckpoint('verify/lenses');
+      }
 
       // 3c. whole-paper coherence pass (strong model, full text)
-      if (!budgetError && planKnobs.whole_paper_passes) {
+      if (!budgetError && !noContinuation && planKnobs.whole_paper_passes) {
         const wpRes = await callJsonWithRepair(
           callJson,
           'strong',
@@ -1918,6 +2033,14 @@ export async function* runReview(
               : `whole-paper verifier failed: ${wpRes.error.message}`,
           );
         }
+      }
+
+      // Python `_verify`: a replan checkpoint after the artifact-verification
+      // sub-stage (7e review B5; the TS pipeline's artifact pass is folded
+      // into the deterministic scan + whole-paper tail — the checkpoint
+      // anchors at the same position, after all breadth passes).
+      if (!budgetError && !noContinuation && isAuto && harness.plan !== undefined) {
+        yield* replanCheckpoint('verify/artifacts');
       }
 
       if (budgetError) {
@@ -1947,7 +2070,7 @@ export async function* runReview(
     // Python `_challenge` semantics: per-section challenger passes over the
     // CANDIDATE list (claims + lens findings), then a whole-paper challenger
     // validates what no section challenger claimed and hunts global issues.
-    if (!budgetError && !skipIfDone('challenge')) {
+    if (!budgetError && !noContinuation && !skipIfDone('challenge')) {
       yield* emit('challenge', 'running');
       const sections = reviewableSections(doc);
       let unitsDone = 0;
@@ -2212,8 +2335,10 @@ export async function* runReview(
       }
     }
 
-    // Python run(): a replan checkpoint after the challenge stage (auto mode).
-    if (!budgetError && isAuto && harness.plan !== undefined && decide !== undefined) {
+    // Python run(): a replan checkpoint after the challenge stage (auto mode)
+    // — gated exactly like the verify checkpoint (isAuto && plan): the replan
+    // runs regardless of whether a decider is bound.
+    if (!budgetError && isAuto && harness.plan !== undefined) {
       yield* replanCheckpoint('challenge');
     }
 
@@ -2225,7 +2350,7 @@ export async function* runReview(
     // persisted BEFORE the audit), rendered into the new {resolution} prompt
     // slot, and whose unmatched entries (first 20) become deterministic
     // checker findings on RunState (NOT report comments — 7b wires those).
-    if (!budgetError && !skipIfDone('bibliography')) {
+    if (!budgetError && !noContinuation && !skipIfDone('bibliography')) {
       yield* emit('bibliography', 'running');
       if (!state.doiResolutions) {
         // Fail-soft (Python catches everything): resolution errors -> no
@@ -2312,21 +2437,21 @@ export async function* runReview(
       }
     }
 
-    // 7f (449174c): one checker-comments instance shared by the meta merge,
-    // the validator stream, and the assemble filter (identity lets assemble
-    // dedupe). Computed AFTER bibliography — the doi-resolution findings land
-    // in state.checkerFindings there — so the stream is complete.
-    const checker = checkerComments(state);
-    const checkerSet = new Set<unknown>(checker);
+    // e2ba304 alignment: ONE checker-comments instance, consumed at assemble
+    // ONLY (the findings never enter the LLM stream — meta's dedup dissolved
+    // 28 deterministic findings into one prose comment in a real-world RMI
+    // run). Computed AFTER bibliography — the doi-resolution findings land in
+    // state.checkerFindings there — so the stream is complete.
+    // checker bound above (used at assemble; also at a mid-verify wrap-up)
 
     // --------------------------------------------------- 5. meta --
-    if (!budgetError && !skipIfDone('meta')) {
+    if (!budgetError && !noContinuation && !skipIfDone('meta')) {
       yield* emit('meta', 'running');
-      // 7f (449174c): deterministic checker findings JOIN the merge — they
-      // ride the comment stream into meta (provenance kept) instead of
-      // entering only at assemble. Python: `merged = list(validated) +
-      // self._checker_comments()`.
-      const merged = [...challengeValidated, ...checker];
+      // e2ba304 (7f F1): deterministic checker findings do NOT enter the
+      // merge — they are code-verified and already distinct; meta's dedup
+      // dissolved them (RMI: 20 doi + 8 xref findings merged into one prose
+      // comment). They are prepended at assemble, provenance intact.
+      const merged = [...challengeValidated];
       // Python: json.dumps(merged, indent=1)[: max(100_000, 900 * n_comments)]
       // (9a40f13: the preservation contract keeps every distinct finding, so
       // both the input listing and the re-emitted output scale with comment
@@ -2389,15 +2514,35 @@ export async function* runReview(
         // 7f synthesis: the lead-referee essay over the merger's
         // deduplicated comments replaces the merger's own overall feedback
         // (NOT additive). Gated on the knob + the affordance gate; a failed
-        // pass keeps the merger's overall (Python logs + returns None).
+        // pass keeps the merger's overall (Python logs + returns None). A
+        // synthesis BUDGET trip propagates like every other stage (7f review
+        // D3: Python BudgetExceeded drains — partial report, validate
+        // skipped), so it must not be swallowed here.
         if (planKnobs.synthesis && harness.allow_call('synthesis')) {
           const essay = await runSynthesis(bib);
-          if (essay !== undefined) artifacts.overall = essay;
+          if (essay instanceof BudgetExceeded) {
+            // The synthesis budget trip drains the run (Python: the error
+            // propagates out of _meta into run()'s BudgetExceeded handler,
+            // so the meta stage never completes) — record the drain and
+            // fall through to the assemble path without the done emit.
+            budgetError = essay;
+            state.partial = true;
+            await saveRun(state);
+            yield* emit('meta', 'failed', `budget cap reached: ${essay.message}`);
+          } else {
+            if (essay !== undefined) artifacts.overall = essay;
+            // Persist the draft review (Python artifacts['draft_review'])
+            // BEFORE announcing done — a resume after meta must not lose
+            // the verdict.
+            await syncArtifacts();
+            yield* emit('meta', 'done');
+          }
+        } else {
+          // Persist the draft review (Python artifacts['draft_review']) BEFORE
+          // announcing done — a resume after meta must not lose the verdict.
+          await syncArtifacts();
+          yield* emit('meta', 'done');
         }
-        // Persist the draft review (Python artifacts['draft_review']) BEFORE
-        // announcing done — a resume after meta must not lose the verdict.
-        await syncArtifacts();
-        yield* emit('meta', 'done');
       } else if (metaRes.kind === 'budget') {
         budgetError = metaRes.error;
       } else if (metaRes.kind === 'invalid_json') {
@@ -2416,18 +2561,22 @@ export async function* runReview(
 
     // ---------------------------------------------------------- 6. validate --
     const validated: ReviewComment[] = [];
-    // 7f (449174c): mechanical checker findings land in the validator too —
-    // they skipped the defense gate by construction, so validate (and, with a
-    // decision role, the DM gate) is their only LLM screening.
-    const mergedValidate = [...challengeValidated, ...checker];
-    if (!budgetError && !skipIfDone('validate') && mergedValidate.length > 0) {
+    // e2ba304: the validator sees the challenge-validated LLM stream ONLY —
+    // deterministic checker findings skip validate entirely (their comment:
+    // "meta's dedup dissolved them"); they render fresh at assemble.
+    if (
+      !budgetError &&
+      !noContinuation &&
+      !skipIfDone('validate') &&
+      challengeValidated.length > 0
+    ) {
       yield* emit('validate', 'running');
       // 7e Python `_dm_validator_gate`: batched grounding predicates (60 per
       // decide call) drop ungrounded comments BEFORE the validator pass;
       // dormant without a decider (identity on the list).
       const gated = await dmValidatorGate(
         doc,
-        mergedValidate as unknown as Record<string, unknown>[],
+        challengeValidated as unknown as Record<string, unknown>[],
         manuscript,
       );
       const gatedComments = gated as unknown as ReviewComment[];
@@ -2467,7 +2616,7 @@ export async function* runReview(
             : `LLM error: ${valRes.error.message}`,
         );
       }
-    } else if (!budgetError && mergedValidate.length === 0) {
+    } else if (!budgetError && challengeValidated.length === 0) {
       yield* emit('validate', 'skipped', 'no candidates to validate');
     }
 
@@ -2478,7 +2627,7 @@ export async function* runReview(
     // gates are wired — `plan_knobs().copyedit` (knob off -> emit skipped,
     // like Python's early return, which never marks the stage) and
     // `budget_allows('copyedit')` (gate stop recorded, stage skipped).
-    if (!budgetError && !skipIfDone('copyedit')) {
+    if (!budgetError && !noContinuation && !skipIfDone('copyedit')) {
       if (!planKnobs.copyedit) {
         // Python: `if not plan_knobs().copyedit: return []` — no stage
         // transition at all; the run's stage list just moves on.
@@ -2517,20 +2666,21 @@ export async function* runReview(
     }
 
     // ---------------------------------------------------------- 7. assemble --
+    // Never-started stages, for the explicit partial trail (drain + wrap-up).
+    const order: Stage[] = [
+      'triage',
+      'claims',
+      'survey',
+      'scout',
+      'verify',
+      'challenge',
+      'bibliography',
+      'meta',
+      'validate',
+      'copyedit',
+    ];
     if (budgetError) {
       // Mark the never-started stages skipped so the state machine is explicit.
-      const order: Stage[] = [
-        'triage',
-        'claims',
-        'survey',
-        'scout',
-        'verify',
-        'challenge',
-        'bibliography',
-        'meta',
-        'validate',
-        'copyedit',
-      ];
       for (const stage of order) {
         if (stageStatus(state, stage) === 'pending') {
           yield* emit(stage, 'skipped', 'budget cap reached earlier in the run');
@@ -2540,6 +2690,16 @@ export async function* runReview(
       await saveRun(state);
       yield* emit('assemble', 'skipped', `budget cap reached: ${budgetError.message}`);
     } else {
+      if (noContinuation) {
+        // 7e review (B4): the wrap-up drain marks every never-started stage
+        // skipped, mirroring the budget drain — the partial trail is
+        // explicit for the UI and the resume gate.
+        for (const stage of order) {
+          if (stageStatus(state, stage) === 'pending') {
+            yield* emit(stage, 'skipped', 'no feasible continuation');
+          }
+        }
+      }
       yield* emit('assemble', 'running');
     }
 
@@ -2558,23 +2718,16 @@ export async function* runReview(
       totalCompletionTokens: totals.completion,
     };
 
-    // Python `_assemble`: deterministic checker findings join the final
-    // comment list FIRST (Python `list(self._checker_comments()) + ...`).
-    // 7f: the checker stream already rode through meta/validate, so dedupe by
-    // identity — a comment object that IS a checker comment is not prepended
-    // again (Python dedupes structurally: its validator re-emits fresh dicts,
-    // so `_checker_comments()` at assemble would double them; the TS pipeline
-    // keeps identity to the same effect). Findings that did NOT survive
-    // meta/validate (drained runs, meta failure) still enter here directly.
-    const finalComments: unknown[] = [
-      ...checker.filter((c) => !checkerSet.has(c) || !validated.includes(c)),
-      ...validated,
-    ];
+    // Python `_assemble` (e2ba304): deterministic checker findings are
+    // prepended FRESH at assemble — `list(self._checker_comments()) + ...`.
+    // They never rode the LLM stream (meta/validate see only validated LLM
+    // comments now), so no dedupe is needed and provenance is intact.
+    const finalComments: unknown[] = [...checker(), ...validated];
     // provenance lost to meta/validator re-emission: re-attach from the
-    // verify-stage candidates + deterministic checker findings (9a40f13).
+    // verify-stage candidates (checker findings carry provenance already;
+    // upstream pins all det comments keep quote+provenance) (9a40f13).
     reattachProvenance(finalComments, [
       ...((state.artifacts?.candidates ?? []) as unknown[]),
-      ...checkerComments(state),
     ]);
     const anchored: ReviewComment[] = (finalComments as ReviewComment[]).map((c, i) => {
       const anchor = c.paragraphAnchor ?? '';
@@ -2608,7 +2761,12 @@ export async function* runReview(
     // PERSISTS its report for the UI but must NOT pin the skipped stages:
     // clear the report on drain so `skipIfDone`/`firstOpenStage` re-enter
     // every not-completed stage on resume (resumable top-up, Stage 7c).
-    if (budgetError) {
+    // 7e review (B4): the wrap-up path (noContinuation) mirrors the drain —
+    // Python's wrapup_incomplete marks the run INCOMPLETE so a top-up can
+    // resume it; the TS resume gate is the same report-clearing contract
+    // (Stage 7c): the partial report rides the yield for the UI, the
+    // persisted state stays resume-ready.
+    if (budgetError || noContinuation) {
       state.report = undefined;
     }
     syncBudgetToState();

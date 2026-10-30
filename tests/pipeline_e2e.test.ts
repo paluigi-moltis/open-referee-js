@@ -754,11 +754,10 @@ rest. The reported mean absolute error is 4.10 in the harder split.
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
       j({ overall_feedback: '## synth' }), // synthesis (7f)
-      // 7f e2e pin: the checker findings merged into the meta stream RIDE
-      // INTO validate — mechanical findings skip the defense gate, so
-      // validate (plus the DM gate with a decision role) is their only LLM
-      // screening. The validator keeps everything.
-      j({ rejected: [], comments: [] }),
+      // e2ba304 (7R F1): checker findings are assemble-only — they never
+      // enter the meta merge or the validate stream, so validate has no LLM
+      // candidates here (challengeValidated is empty) and SKIPS entirely.
+      // No validator reply is queued.
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -817,32 +816,31 @@ rest. The reported mean absolute error is 4.10 in the harder split.
     expect(report.comments[0]!.provenance).toBe('deterministic');
     expect(report.comments[0]!.id).toBe('c000');
 
-    // 7f meta-merge pin: the checker findings entered the META prompt (they
-    // ride the comment stream after defense, provenance kept — mechanical
-    // findings skip the author-defense gate), and the synthesis call saw the
-    // merger's DEDUPLICATED output, not the raw merged stream.
+    // e2ba304 (7R F1) meta pin: the checker findings do NOT enter the META
+    // prompt anymore (assemble-only) — the meta stream carries only the
+    // (empty) challenge-validated merge, and validate never runs (no LLM
+    // candidates without checker findings in the stream).
     const metaCall = strong.calls.find((c) =>
       c.messages[1]!.content.startsWith('Manuscript title: Checker Paper\n\nTriage:'),
     )!;
-    expect(metaCall.messages[1]!.content).toContain('Reference to undefined Figure 9');
-    expect(metaCall.messages[1]!.content).toContain('"provenance": "deterministic"');
+    expect(metaCall.messages[1]!.content).not.toContain(
+      'Reference to undefined Figure 9',
+    );
+    const validateCall = strong.calls.find((c) =>
+      c.messages[0]!.content.includes('REVIEW VALIDATOR'),
+    );
+    expect(validateCall).toBeUndefined();
+    // assemble prepends each checker title EXACTLY ONCE with deterministic
+    // provenance (no meta dedupe pass touched them).
+    const titles = report.comments.map((c) => c.title);
+    expect(titles.filter((t) => t === 'Reference to undefined Figure 9')).toHaveLength(
+      1,
+    );
     const synthCall = strong.calls.find((c) =>
       c.messages[0]!.content.includes('LEAD REFEREE'),
     )!;
     expect(synthCall.messages[1]!.content).toContain(
       'Validated comments (title | severity | provenance | anchor):',
-    );
-    // validate ran over the merged stream (3 checker findings present)
-    const validateCall = strong.calls.find((c) =>
-      c.messages[0]!.content.includes('REVIEW VALIDATOR'),
-    )!;
-    expect(validateCall.messages[1]!.content).toContain(
-      'Reference to undefined Figure 9',
-    );
-    // assemble did NOT double the checker comments (identity dedupe)
-    const titles = report.comments.map((c) => c.title);
-    expect(titles.filter((t) => t === 'Reference to undefined Figure 9')).toHaveLength(
-      1,
     );
   });
 
@@ -998,6 +996,144 @@ rest. The reported mean absolute error is 4.10 in the harder split.
     const report = state.report as import('../src/report/models').ReviewReport;
     const detComments = report.comments.filter((c) => c.provenance === 'deterministic');
     expect(detComments.map((c) => c.comment)).toEqual(['phantom']);
+  });
+
+  // e2ba304 (7R F1): origin/main test_yield.py ports — the checker findings
+  // are ASSEMBLE-ONLY (meta must not dissolve them, assemble prepends them
+  // fresh with provenance intact).
+  it('port: meta does not dissolve checker comments (test_meta_does_not_dissolve_checker_comments)', async () => {
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      j({ claims: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ validated: [], new_comments: [] }),
+      j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+      j({ items: [] }),
+    );
+    const { state } = await drain(
+      runReview({
+        doc: checkerDoc(),
+        settings: makeSettings(),
+        providers: { strong, small },
+      }),
+    );
+    const metaCall = strong.calls.find((c) =>
+      c.messages[1]!.content.startsWith('Manuscript title: Checker Paper\n\nTriage:'),
+    )!;
+    const metaUser = metaCall.messages[1]!.content;
+    // NO checker finding title, quote, or provenance tag rides the meta
+    // prompt: the merge is list(validated) ONLY.
+    expect(metaUser).not.toContain('Reference to undefined Figure 9');
+    expect(metaUser).not.toContain('References to sections without matching headings');
+    expect(metaUser).not.toContain('"provenance": "deterministic"');
+    // and meta's OUTPUT cannot have dissolved anything — every finding
+    // survives to the report verbatim, exactly once.
+    const report = state.report as import('../src/report/models').ReviewReport;
+    const titles = report.comments.map((c) => c.title);
+    for (const t of [
+      'Reference to undefined Figure 9',
+      'References to sections without matching headings',
+      'Conflicting values for "absolute error is" (3.42 vs 4.10)',
+    ]) {
+      expect(titles.filter((x) => x === t)).toHaveLength(1);
+    }
+  });
+
+  it('port: assemble prepends checker comments with provenance (test_assemble_appends_checker_comments_with_provenance)', async () => {
+    const strong = new ScriptedProvider();
+    strong.queue(
+      j({ summary: 's' }),
+      // one logical claim so the claim worker (wholePaperPasses=false: no
+      // whole-paper verifier) produces the LLM candidate — the ASSEMBLE order
+      // is then observable: the LLM comment must come AFTER the
+      // deterministic block (Python finalComments = checker + draft.comments).
+      j({
+        claims: [
+          {
+            id: 'cl001',
+            type: 'logical',
+            importance: 'central',
+            components: { statement: 's' },
+            anchor: 'See Section 4 for the ablations',
+            section: '1. Intro',
+          },
+        ],
+      }),
+      // claim worker (logical -> strong)
+      j({
+        comments: [
+          {
+            quote: 'See Section 4 for the ablations',
+            message: 'Section 4 is referenced but absent',
+            score: 0.5,
+          },
+        ],
+      }),
+      // Front-matter challenger keeps the claim (no drops); the whole-paper
+      // challenger then validates it through — the candidate must SURVIVE
+      // challenge for the assemble order to be observable.
+      j({ validated: [], new_comments: [] }),
+      j({
+        validated: [
+          {
+            paragraph_anchor: 'See Section 4 for the ablations',
+            quote: 'See Section 4 for the ablations',
+            message: 'Section 4 is referenced but absent',
+            score: 0.5,
+          },
+        ],
+        new_comments: [],
+      }),
+      j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }),
+      // validator: challengeValidated is non-empty now (the whole-paper
+      // challenger kept the claim worker's candidate) — it keeps everything.
+      j({ validated: [0], rejected: [] }),
+    );
+    const small = new ScriptedProvider();
+    small.queue(
+      j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
+      j({
+        entries: [{ raw_entry: '[1] Smith, J. (2001)', status: 'verified' }],
+        in_text_issues: [],
+        missing_key_references: [],
+      }),
+      j({ items: [] }),
+    );
+    const { state } = await drain(
+      runReview({
+        doc: checkerDoc(),
+        settings: makeSettings(),
+        providers: { strong, small },
+      }),
+    );
+    const report = state.report as import('../src/report/models').ReviewReport;
+    // deterministic block FIRST, LLM comments after (assemble prepend)
+    const firstLlm = report.comments.findIndex((c) => c.provenance !== 'deterministic');
+    expect(firstLlm).toBeGreaterThan(0);
+    expect(
+      report.comments.slice(0, firstLlm).every((c) => c.provenance === 'deterministic'),
+    ).toBe(true);
+    // every deterministic comment keeps quote + provenance (upstream pins)
+    for (const c of report.comments.filter((x) => x.provenance === 'deterministic')) {
+      expect(c.quote).not.toBe('');
+      expect(c.title).not.toBe('');
+    }
+    // ids number the COMBINED list in order (c000.. deterministic, then LLM)
+    expect(report.comments[0]!.id).toBe('c000');
+    expect(report.comments[firstLlm]!.id).toBe(`c${String(firstLlm).padStart(3, '0')}`);
   });
 });
 
