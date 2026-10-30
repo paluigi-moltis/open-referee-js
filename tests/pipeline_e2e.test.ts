@@ -183,6 +183,8 @@ describe('runReview happy path', () => {
           '## Weaknesses\n\nThe novelty claim is overstated. Recommend major revision.',
         paper_summary: 's',
       }),
+      // synthesis (7f): essay replaces the merger's overall feedback
+      j({ overall_feedback: '## Synth essay. Recommend major revision.' }),
 
       // validator: keep index 0
       j({ validated: [0], rejected: [], reasons: 'ok' }),
@@ -263,11 +265,17 @@ describe('runReview happy path', () => {
     expect(state.partial).toBe(false);
 
     // strong provider: triage, inventory, theorem_proof worker,
-    // 2 section challengers, whole-paper challenger, meta, validator = 8
+    // 2 section challengers, whole-paper challenger, meta, synthesis,
+    // validator = 9
     // (wholePaperPasses=false: no whole-paper VERIFIER; the whole-paper
     // CHALLENGER is part of the challenge stage and always runs. The survey
     // moved to the SMALL role in Stage 5 — Python `_literature` parity.)
-    expect(strong.calls).toHaveLength(8);
+    expect(strong.calls).toHaveLength(9);
+    // 7f: the synthesis call rides the meta stage (callType 'synthesis',
+    // output-budgeted) and its essay REPLACES the merger's overall feedback
+    expect(strong.calls[7]!.spec.maxTokens).toBe(6144);
+    expect(strong.calls[7]!.messages[0]!.content).toContain('LEAD REFEREE');
+    expect(report.overall).toBe('## Synth essay. Recommend major revision.');
     expect(strong.calls[0]!.spec.model).toBe('m-strong');
     expect(strong.calls[0]!.spec.temperature).toBe(0.2);
     expect(strong.calls[0]!.spec.maxTokens).toBe(4096);
@@ -447,7 +455,8 @@ describe('runReview validator filtering', () => {
         comment: { message: 'adjusted message', score: 0.4 },
       }),
       j({ verdict: 'upheld' }),
-      j({ overall_feedback: 'report' }),
+      j({ overall_feedback: 'report', recommendation: 'minor revision' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
       // validator sees the POST-gate list (2 comments) and keeps both
       j({ validated: [0, 1], rejected: [] }),
     );
@@ -562,6 +571,7 @@ describe('runReview malformed JSON', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
       // validator never runs: no candidates survived
     );
     const small = new ScriptedProvider();
@@ -628,8 +638,8 @@ describe('runReview crash recovery', () => {
 describe('runReview depth preset wiring', () => {
   it('perSectionLenses=false runs claims+challengers only; true runs the lens matrix on small', async () => {
     // lenses off: triage + inventory (empty -> claims failed, no repair consumed)
-    // + survey + 2 challengers + whole-paper challenger + meta = 7 strong calls
-    // (validator skipped: no candidates survive a claimless run)
+    // + survey + 2 challengers + whole-paper challenger + meta + synthesis =
+    // 7 strong calls (validator skipped: no candidates survive a claimless run)
     const strong = new ScriptedProvider();
     strong.queue(
       j({ summary: 's' }),
@@ -639,6 +649,7 @@ describe('runReview depth preset wiring', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
     );
     const small0 = new ScriptedProvider();
     small0.queue(
@@ -653,12 +664,14 @@ describe('runReview depth preset wiring', () => {
       }),
     );
     // triage + inventory + 2 section challengers + whole-paper challenger +
-    // meta = 6 (survey moved to small; validator skipped, no candidates)
-    expect(strong.calls).toHaveLength(6);
+    // meta + synthesis = 7 (survey moved to small; validator skipped,
+    // no candidates)
+    expect(strong.calls).toHaveLength(7);
 
     // lenses on, whole-paper off: statistical_content 'regression' ->
-    // prose + empirical + lit = 3 lenses x 2 sections = 6 SMALL calls
-    // (the surveyor makes it 7 on small overall)
+    // prose + empirical + stats + lit + clarity = 5 lenses x 2 sections =
+    // 10 SMALL calls (7f added the stats lens for empirical triage and made
+    // clarity always-on; the surveyor makes it 11 on small overall)
     const strong2 = new ScriptedProvider();
     strong2.queue(
       j({ summary: 's', statistical_content: 'regression' }),
@@ -668,12 +681,13 @@ describe('runReview depth preset wiring', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }), // whole-paper challenger (always runs)
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
     );
     const small2 = new ScriptedProvider();
     small2.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
     );
-    for (let i = 0; i < 6; i++) small2.queue(j({ comments: [] }));
+    for (let i = 0; i < 10; i++) small2.queue(j({ comments: [] }));
     small2.queue(j({ items: [] })); // copyedit annex
     await drain(
       runReview({
@@ -684,10 +698,10 @@ describe('runReview depth preset wiring', () => {
         providers: { strong: strong2, small: small2 },
       }),
     );
-    expect(small2.calls).toHaveLength(8);
+    expect(small2.calls).toHaveLength(12);
     // lens order: lens-outer loop -> 2 sections per lens: prose, prose,
-    // empirical, empirical, lit, lit; calls[0] is the surveyor (survey
-    // stage precedes verify).
+    // empirical, empirical, stats, stats, lit, lit, clarity, clarity;
+    // calls[0] is the surveyor (survey stage precedes verify).
     expect(small2.calls[1]!.messages[0]!.content).toContain(
       'INTERNAL COHERENCE REFEREE',
     );
@@ -695,8 +709,12 @@ describe('runReview depth preset wiring', () => {
       'STATISTICS AND ECONOMETRICS REFEREE',
     );
     expect(small2.calls[5]!.messages[0]!.content).toContain(
+      'STATISTICAL RIGOR REFEREE',
+    );
+    expect(small2.calls[7]!.messages[0]!.content).toContain(
       'LITERATURE COHERENCE REFEREE',
     );
+    expect(small2.calls[9]!.messages[0]!.content).toContain('CLARITY REFEREE');
   });
 });
 
@@ -735,7 +753,12 @@ rest. The reported mean absolute error is 4.10 in the harder split.
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
-      // validator never runs (no candidates)
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
+      // 7f e2e pin: the checker findings merged into the meta stream RIDE
+      // INTO validate — mechanical findings skip the defense gate, so
+      // validate (plus the DM gate with a decision role) is their only LLM
+      // screening. The validator keeps everything.
+      j({ rejected: [], comments: [] }),
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -793,6 +816,34 @@ rest. The reported mean absolute error is 4.10 in the harder split.
     // ids number the COMBINED list (checker comments come first: c000...)
     expect(report.comments[0]!.provenance).toBe('deterministic');
     expect(report.comments[0]!.id).toBe('c000');
+
+    // 7f meta-merge pin: the checker findings entered the META prompt (they
+    // ride the comment stream after defense, provenance kept — mechanical
+    // findings skip the author-defense gate), and the synthesis call saw the
+    // merger's DEDUPLICATED output, not the raw merged stream.
+    const metaCall = strong.calls.find((c) =>
+      c.messages[1]!.content.startsWith('Manuscript title: Checker Paper\n\nTriage:'),
+    )!;
+    expect(metaCall.messages[1]!.content).toContain('Reference to undefined Figure 9');
+    expect(metaCall.messages[1]!.content).toContain('"provenance": "deterministic"');
+    const synthCall = strong.calls.find((c) =>
+      c.messages[0]!.content.includes('LEAD REFEREE'),
+    )!;
+    expect(synthCall.messages[1]!.content).toContain(
+      'Validated comments (title | severity | provenance | anchor):',
+    );
+    // validate ran over the merged stream (3 checker findings present)
+    const validateCall = strong.calls.find((c) =>
+      c.messages[0]!.content.includes('REVIEW VALIDATOR'),
+    )!;
+    expect(validateCall.messages[1]!.content).toContain(
+      'Reference to undefined Figure 9',
+    );
+    // assemble did NOT double the checker comments (identity dedupe)
+    const titles = report.comments.map((c) => c.title);
+    expect(titles.filter((t) => t === 'Reference to undefined Figure 9')).toHaveLength(
+      1,
+    );
   });
 
   it('resume with checkerFindings present: the scan is skipped (emit absent)', async () => {
@@ -808,6 +859,9 @@ rest. The reported mean absolute error is 4.10 in the harder split.
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'first pass' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
+      // validate (7f merged stream: 4 checker findings, 0 LLM candidates)
+      j({ rejected: [], comments: [] }),
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -878,6 +932,8 @@ rest. The reported mean absolute error is 4.10 in the harder split.
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
+      j({ rejected: [], comments: [] }), // validate over the merged stream
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -981,6 +1037,7 @@ describe('runReview malformed-envelope tolerance (fe463f2 + 61f5822)', () => {
         42,
       ]),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
       // validator keeps everything
       j({ validated: [0], rejected: [] }),
     );
@@ -1049,6 +1106,7 @@ describe('runReview malformed-envelope tolerance (fe463f2 + 61f5822)', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
       j({ validated: [0], rejected: [] }),
     );
     const small = new ScriptedProvider();

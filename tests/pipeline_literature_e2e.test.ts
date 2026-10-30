@@ -141,6 +141,7 @@ describe('literature stage wiring (runReview survey + scout)', () => {
       j({ validated: [], new_comments: [] }), // Intro challenger
       j({ validated: [], new_comments: [] }), // whole-paper challenger
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: 'ok' }), // synthesis (7f)
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -232,6 +233,7 @@ describe('literature stage wiring (runReview survey + scout)', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: 'ok' }), // synthesis (7f)
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -271,6 +273,7 @@ describe('literature stage wiring (runReview survey + scout)', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: 'ok' }), // synthesis (7f)
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -308,6 +311,7 @@ describe('literature stage wiring (runReview survey + scout)', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'ok' }),
+      j({ overall_feedback: 'ok' }), // synthesis (7f)
     );
     const small = new ScriptedProvider();
     small.queue(

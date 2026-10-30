@@ -1489,6 +1489,9 @@ export class BudgetHarness {
           whole_paper_passes: false,
           defense_round: false,
           max_artifacts: 0,
+          // 7f: the lean finish keeps the meta merger's own overall — no
+          // synthesis essay on a shrinking plan (min_viable_knobs parity).
+          synthesis: false,
         }),
       ],
     ];

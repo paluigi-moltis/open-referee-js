@@ -49,12 +49,16 @@ import type {
 import {
   challengerPrompt,
   challengerSystem,
+  clarityVerifierSystem,
   empiricalVerifierSystem,
   litVerifierSystem,
   mathVerifierSystem,
   metaPrompt,
   metaSystem,
   proseVerifierSystem,
+  statsVerifierSystem,
+  synthesisPrompt,
+  synthesisSystem,
   triagePrompt,
   triageSystem,
   validatorPrompt,
@@ -207,6 +211,8 @@ interface Artifacts {
   /** meta-review markdown */
   overall: string;
   recommendation?: string;
+  /** 7f: the merger's deduplicated comment list (Python draft['comments']). */
+  metaComments: Record<string, unknown>[];
   /** copyedit-stage output: sanitized language-mechanics items. */
   copyeditItems?: CopyeditItem[];
 }
@@ -396,7 +402,7 @@ function anchorIn(anchor: string, text: string): boolean {
 }
 
 /** Python `_lenses_for`: verifier lens selection based on triage fields. */
-function lensesFor(
+export function lensesFor(
   triage: Record<string, unknown>,
 ): { name: string; system: string }[] {
   const mathDensity = String(triage['mathematical_density'] ?? '').toLowerCase();
@@ -420,8 +426,13 @@ function lensesFor(
   ) {
     lenses.push({ name: 'empirical', system: empiricalVerifierSystem });
   }
-  // literature coherence always runs: cheap and central to the review
+  if ((statContent !== '' && statContent !== 'none') || style.includes('empirical')) {
+    // Stage 7f (449174c): statistical-rigor lens for empirical papers.
+    lenses.push({ name: 'stats', system: statsVerifierSystem });
+  }
+  // literature coherence + clarity always run: cheap and central to the review
   lenses.push({ name: 'lit', system: litVerifierSystem });
+  lenses.push({ name: 'clarity', system: clarityVerifierSystem });
   return lenses;
 }
 
@@ -671,6 +682,7 @@ export async function* runReview(
       claims: [],
       candidates: [],
       overall: '',
+      metaComments: [],
       ...(state.artifacts as Partial<Artifacts> | undefined),
     };
     // draftReview is stored under its own key (Python draft_review); fold it
@@ -1120,6 +1132,76 @@ export async function* runReview(
       state.docData = documentToData(doc!);
       syncBudgetToState();
       await saveRun(state);
+    }
+
+    /**
+     * Python `_synthesis` (449174c): the lead-referee essay pass over the
+     * meta merger's deduplicated comments. Emits one strong call tagged
+     * `synthesis`, priced and output-budgeted via callMaxTokens; returns
+     * undefined when the essay is missing/empty (the caller keeps the
+     * merger's overall — the pass is fail-soft, never fails the stage).
+     */
+    async function runSynthesis(bib: BibliographyAudit): Promise<string | undefined> {
+      const comments = artifacts.metaComments;
+      const listing = comments
+        .slice(0, 120)
+        .map((c) => {
+          const rawScore = c['score'];
+          const score =
+            typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : 0;
+          const prov = c['provenance'];
+          return (
+            `- [${score.toFixed(2)}] ` +
+            `(${typeof prov === 'string' && prov !== '' ? prov : 'llm'}) ` +
+            `${String(c['title'] ?? '').slice(0, 110)} :: ` +
+            `${String(c['paragraph_anchor'] ?? '').slice(0, 80)}`
+          );
+        })
+        .join('\n');
+      const bibSummary = JSON.stringify({
+        entries: bib.entries
+          .filter(
+            (e): e is Record<string, unknown> => typeof e === 'object' && e !== null,
+          )
+          .slice(0, 40)
+          .map((e) => ({ raw: e['raw_entry'] ?? '', status: e['status'] ?? '' })),
+        in_text_issues: bib.in_text_issues.slice(0, 20),
+      }).slice(0, 8000);
+      const res = await callJson(
+        'strong',
+        synthesisSystem,
+        synthesisPrompt(
+          doc.title,
+          JSON.stringify(artifacts.triage ?? {}).slice(0, 3000),
+          // Python: listing or "(no validated comments)"
+          listing || '(no validated comments)',
+          bibSummary,
+          (artifacts.survey?.fieldHint ?? '').slice(0, 1500),
+          // Python: venue_block formatted at the tail of SYNTHESIS_USER. The
+          // TS pipeline has no venue block yet; the slot renders ''.
+          '',
+        ),
+        {
+          callType: 'synthesis',
+          maxTokens: callMaxTokens('synthesis', planKnobs.output_budget),
+        },
+      );
+      if (res.kind !== 'ok') {
+        console.warn(
+          `synthesis pass degraded: ${
+            res.kind === 'budget'
+              ? `budget cap reached: ${res.error.message}`
+              : res.kind === 'llm_error'
+                ? res.error.message
+                : 'invalid JSON in model response'
+          }`,
+        );
+        return undefined;
+      }
+      const o = (res.value ?? {}) as Record<string, unknown>;
+      const essay =
+        typeof o['overall_feedback'] === 'string' ? o['overall_feedback'].trim() : '';
+      return essay === '' ? undefined : essay;
     }
 
     /** Python `_stage_or_resume` gate: skip a stage whose artifact survived. */
@@ -2230,16 +2312,28 @@ export async function* runReview(
       }
     }
 
-    // -------------------------------------------------------------- 5. meta --
+    // 7f (449174c): one checker-comments instance shared by the meta merge,
+    // the validator stream, and the assemble filter (identity lets assemble
+    // dedupe). Computed AFTER bibliography — the doi-resolution findings land
+    // in state.checkerFindings there — so the stream is complete.
+    const checker = checkerComments(state);
+    const checkerSet = new Set<unknown>(checker);
+
+    // --------------------------------------------------- 5. meta --
     if (!budgetError && !skipIfDone('meta')) {
       yield* emit('meta', 'running');
+      // 7f (449174c): deterministic checker findings JOIN the merge — they
+      // ride the comment stream into meta (provenance kept) instead of
+      // entering only at assemble. Python: `merged = list(validated) +
+      // self._checker_comments()`.
+      const merged = [...challengeValidated, ...checker];
       // Python: json.dumps(merged, indent=1)[: max(100_000, 900 * n_comments)]
       // (9a40f13: the preservation contract keeps every distinct finding, so
       // both the input listing and the re-emitted output scale with comment
       // count — static caps truncated large merges mid-JSON).
-      const commentsJson = JSON.stringify(challengeValidated, null, 1).slice(
+      const commentsJson = JSON.stringify(merged, null, 1).slice(
         0,
-        metaCommentsJsonCap(challengeValidated.length),
+        metaCommentsJsonCap(merged.length),
       );
       // Python `_meta` L619-624: bib_summary rides into the meta prompt.
       const bib = artifacts.bibliography ?? emptyAudit();
@@ -2252,7 +2346,7 @@ export async function* runReview(
       // 2000 + 130*n)) (closes the 7a "not scaled" divergence).
       const metaMax = Math.max(
         callMaxTokens('meta', planKnobs.output_budget) ?? 8192,
-        Math.min(32_768, 2_000 + 130 * challengeValidated.length),
+        Math.min(32_768, 2_000 + 130 * merged.length),
       );
       const metaRes = await callJson(
         'strong',
@@ -2280,6 +2374,26 @@ export async function* runReview(
         } else {
           artifacts.overall = '';
         }
+        // Python draft['comments']: the merger's deduplicated list, the
+        // synthesis listing's source (dicts only, 61f5822 parity).
+        artifacts.metaComments = (
+          typeof v === 'object' &&
+          v !== null &&
+          Array.isArray((v as Record<string, unknown>)['comments'])
+            ? ((v as Record<string, unknown>)['comments'] as unknown[])
+            : []
+        ).filter(
+          (c): c is Record<string, unknown> =>
+            typeof c === 'object' && c !== null && !Array.isArray(c),
+        );
+        // 7f synthesis: the lead-referee essay over the merger's
+        // deduplicated comments replaces the merger's own overall feedback
+        // (NOT additive). Gated on the knob + the affordance gate; a failed
+        // pass keeps the merger's overall (Python logs + returns None).
+        if (planKnobs.synthesis && harness.allow_call('synthesis')) {
+          const essay = await runSynthesis(bib);
+          if (essay !== undefined) artifacts.overall = essay;
+        }
         // Persist the draft review (Python artifacts['draft_review']) BEFORE
         // announcing done — a resume after meta must not lose the verdict.
         await syncArtifacts();
@@ -2302,14 +2416,18 @@ export async function* runReview(
 
     // ---------------------------------------------------------- 6. validate --
     const validated: ReviewComment[] = [];
-    if (!budgetError && !skipIfDone('validate') && challengeValidated.length > 0) {
+    // 7f (449174c): mechanical checker findings land in the validator too —
+    // they skipped the defense gate by construction, so validate (and, with a
+    // decision role, the DM gate) is their only LLM screening.
+    const mergedValidate = [...challengeValidated, ...checker];
+    if (!budgetError && !skipIfDone('validate') && mergedValidate.length > 0) {
       yield* emit('validate', 'running');
       // 7e Python `_dm_validator_gate`: batched grounding predicates (60 per
       // decide call) drop ungrounded comments BEFORE the validator pass;
       // dormant without a decider (identity on the list).
       const gated = await dmValidatorGate(
         doc,
-        challengeValidated as unknown as Record<string, unknown>[],
+        mergedValidate as unknown as Record<string, unknown>[],
         manuscript,
       );
       const gatedComments = gated as unknown as ReviewComment[];
@@ -2349,7 +2467,7 @@ export async function* runReview(
             : `LLM error: ${valRes.error.message}`,
         );
       }
-    } else if (!budgetError && challengeValidated.length === 0) {
+    } else if (!budgetError && mergedValidate.length === 0) {
       yield* emit('validate', 'skipped', 'no candidates to validate');
     }
 
@@ -2440,13 +2558,18 @@ export async function* runReview(
       totalCompletionTokens: totals.completion,
     };
 
-    // Python `_assemble`: deterministic checker findings bypass the LLM gates
-    // entirely — code-verified, already distinct, provenance kept — and JOIN
-    // the validated comments (before them, Python `list(self._checker_comments()) + ...`).
-    // They are NOT report comments through meta/validate (Python keeps them
-    // out of meta's merge to avoid the RMI dedup collapse) but become
-    // anchored report comments here.
-    const finalComments: unknown[] = [...checkerComments(state), ...validated];
+    // Python `_assemble`: deterministic checker findings join the final
+    // comment list FIRST (Python `list(self._checker_comments()) + ...`).
+    // 7f: the checker stream already rode through meta/validate, so dedupe by
+    // identity — a comment object that IS a checker comment is not prepended
+    // again (Python dedupes structurally: its validator re-emits fresh dicts,
+    // so `_checker_comments()` at assemble would double them; the TS pipeline
+    // keeps identity to the same effect). Findings that did NOT survive
+    // meta/validate (drained runs, meta failure) still enter here directly.
+    const finalComments: unknown[] = [
+      ...checker.filter((c) => !checkerSet.has(c) || !validated.includes(c)),
+      ...validated,
+    ];
     // provenance lost to meta/validator re-emission: re-attach from the
     // verify-stage candidates + deterministic checker findings (9a40f13).
     reattachProvenance(finalComments, [

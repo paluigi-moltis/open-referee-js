@@ -91,6 +91,7 @@ describe('two-phase JSON (Stage 7d) — ladder sequencing', () => {
     strong.queue(j({ validated: [], new_comments: [] }));
     strong.queue(j({ validated: [], new_comments: [] }));
     strong.queue(j({ overall_feedback: 'ok' }));
+    strong.queue(j({ overall_feedback: 'ok' })); // synthesis (7f)
     const small = new ReasoningStub(false);
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
@@ -147,6 +148,7 @@ describe('two-phase JSON (Stage 7d) — ladder sequencing', () => {
     strong.queue(j({ validated: [], new_comments: [] }));
     strong.queue(j({ validated: [], new_comments: [] }));
     strong.queue(j({ overall_feedback: 'ok' }));
+    strong.queue(j({ overall_feedback: 'ok' })); // synthesis (7f)
     const small = new ReasoningStub(false);
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
@@ -202,6 +204,7 @@ describe('two-phase JSON (Stage 7d) — ladder sequencing', () => {
     strong.queue(j({ validated: [], new_comments: [] }));
     strong.queue(j({ validated: [], new_comments: [] }));
     strong.queue(j({ overall_feedback: 'ok' }));
+    strong.queue(j({ overall_feedback: 'ok' })); // synthesis (7f)
     const small = new ReasoningStub(false);
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
@@ -227,9 +230,9 @@ describe('two-phase JSON (Stage 7d) — ladder sequencing', () => {
       const next = await gen.next();
       if (next.done) break;
     }
-    // identical call count to the pre-7d behavior for this fixture
-    // (triage + inventory + 1 section challenger + whole-paper challenger + meta)
-    expect(strong.calls).toHaveLength(5);
+    // pre-7d behavior + one synthesis call (7f): triage + inventory +
+    // 1 section challenger + whole-paper challenger + meta + synthesis
+    expect(strong.calls).toHaveLength(6);
     expect(strong.calls.every((c) => c.spec.reasoningEffort === undefined)).toBe(true);
     expect(strong.calls.every((c) => c.spec.callMaxTokens === undefined)).toBe(true);
   });

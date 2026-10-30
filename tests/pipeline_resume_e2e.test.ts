@@ -269,9 +269,11 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
     const strong3 = new ScriptedProvider();
     strong3.queue(
       // resume re-enters mid-challenge is impossible (artifact saved) —
-      // the ONLY strong calls are meta (+ validator if candidates exist;
-      // none do here)
+      // the ONLY strong calls are meta (+ synthesis, 7f) + validate over the
+      // merged stream (deterministic checker findings ride it since 7f)
       j({ overall_feedback: 'resumed report', recommendation: 'minor revision' }),
+      j({ overall_feedback: 'synth over resumed report' }),
+      j({ rejected: [], comments: [] }),
     );
     const small3 = new ScriptedProvider();
     small3.queue(
@@ -293,9 +295,9 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
       }),
     );
 
-    // earlier stages NOT re-called: meta only on strong; bibliography +
-    // copyedit only on small
-    expect(strong3.calls).toHaveLength(1);
+    // earlier stages NOT re-called: meta + synthesis + validate only on
+    // strong; bibliography + copyedit only on small
+    expect(strong3.calls).toHaveLength(3);
     expect(small3.calls).toHaveLength(2);
     expect(small3.calls[0]!.messages[0]!.content).toBe(bibliographySystem);
     // meta got the bib summary wired into the bibSummary slot
@@ -305,7 +307,7 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
     // run completed and the report assembled
     expect(state.stages['assemble']).toBe('done');
     const report = state.report as import('../src/report/models').ReviewReport;
-    expect(report.overall).toBe('resumed report');
+    expect(report.overall).toBe('synth over resumed report');
     expect(state.partial).toBe(false);
   });
 
@@ -353,8 +355,10 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
     const small = new ScriptedProvider();
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
-      // lenses: 'none' density/stats + 'formal' style -> prose + lit only
-      // (no math/empirical), 2 lenses x 2 sections = 4 responses
+      // lenses: 'none' density/stats + 'formal' style -> prose + lit +
+      // clarity (7f: clarity always runs), 3 lenses x 2 sections = 6 responses
+      j({ comments: [] }),
+      j({ comments: [] }),
       j({ comments: [] }),
       j({ comments: [] }),
       j({ comments: [] }),
@@ -404,6 +408,8 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
       j({ verdict: 'upheld' }),
       // meta
       j({ overall_feedback: 'survived resume', recommendation: 'accept' }),
+      // synthesis (7f)
+      j({ overall_feedback: 'synth after resume' }),
       // validator
       j({ validated: [0], rejected: [] }),
     );
@@ -435,7 +441,7 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
         ),
       ),
     ).toBe(true);
-    expect(strong2.calls).toHaveLength(6); // 3 challenge + defense + meta + validate
+    expect(strong2.calls).toHaveLength(7); // 3 challenge + defense + meta + synthesis + validate
     expect(small2.calls).toHaveLength(3); // defense + bibliography + copyedit
     expect(state.stages['assemble']).toBe('done');
     const report = state.report as import('../src/report/models').ReviewReport;
@@ -461,8 +467,12 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
-      // meta (validate never reached — that's the interruption point)
+      // meta → synthesis (7f) → validate over the merged checker stream
+      // (7f: deterministic findings make validate run even with no LLM
+      // candidates). Copyedit announcing itself is the interruption point.
       j({ overall_feedback: 'THE META VERDICT', recommendation: 'minor revision' }),
+      j({ overall_feedback: 'THE SYNTH ESSAY' }),
+      j({ rejected: [], comments: [] }),
     );
     const small = new ScriptedProvider();
     small.queue(
@@ -497,10 +507,10 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
     const resumeState = await loadRun(saved!.runId);
 
     const strong2 = new ScriptedProvider();
-    strong2.queue(
-      // ONLY the validator runs (meta skipped: draft restored, no re-call)
-      j({ validated: [0], rejected: [] }),
-    );
+    // the claimless claims stage FAILED pre-interrupt → it re-runs on resume
+    // (stage-failure semantics), then validate re-runs?? no — validate is
+    // done. Only claims + its downstream nothing: claims re-inventories.
+    strong2.queue(j({ claims: [] }));
     const small2 = new ScriptedProvider();
     small2.queue(j({ items: [] })); // copyedit annex (never ran pre-interrupt)
     const { state } = await drain(
@@ -511,10 +521,12 @@ describe('resume e2e: interrupt after challenge, resume completes', () => {
         resume: { state: resumeState! },
       }),
     );
-    expect(strong2.calls).toHaveLength(1); // validator only — meta NOT re-called
+    // the re-run claims inventory + nothing else (meta/synthesis/validate
+    // are all restored; claims re-runs because it FAILED pre-interrupt)
+    expect(strong2.calls).toHaveLength(1);
     expect(small2.calls).toHaveLength(1); // copyedit annex only
     const report = state.report as import('../src/report/models').ReviewReport;
-    expect(report.overall).toBe('THE META VERDICT');
+    expect(report.overall).toBe('THE SYNTH ESSAY');
     // NB: partial is true here — the claimless fixture marks the claims stage
     // 'failed or produced no claims' in BOTH attempts (asserted above).
   });
@@ -536,6 +548,8 @@ describe('copyedit artifact contract', () => {
       j({ validated: [], new_comments: [] }),
       j({ validated: [], new_comments: [] }),
       j({ overall_feedback: 'done once' }),
+      j({ overall_feedback: 'done once (synth)' }),
+      j({ rejected: [], comments: [] }), // validate over the merged checker stream (7f)
     );
     const small = new ScriptedProvider();
     small.queue(

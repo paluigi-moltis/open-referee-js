@@ -183,10 +183,10 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     const strong2 = new ScriptedProvider();
     const small2 = new ScriptedProvider();
     queueHead(strong2);
-    // surveyor (small) + bibliography (small) + meta (strong) + copyedit
-    // (small): the drain re-runs triage -> assemble (nothing had completed).
-    // NB: bibliography's reply is `items: []`-safe — the audit's shape is
-    // entries/in_text_issues/missing_key_references (probe-verified).
+    // surveyor (small) + bibliography (small) + meta + synthesis (strong) +
+    // validate (strong; 7f: the doi finding from the offline bibliography
+    // resolution rides the merged stream) + copyedit (small): the drain
+    // re-runs triage -> assemble (nothing had completed).
     small2.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
       j({
@@ -198,6 +198,8 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     );
     strong2.queue(
       j({ overall_feedback: 'topped-up report', recommendation: 'accept' }),
+      j({ overall_feedback: '## synth' }), // synthesis (7f)
+      j({ rejected: [], comments: [] }), // validate over the merged stream
     );
 
     const raised = makeSettings({ maxCostUsd: 50 });
@@ -214,13 +216,15 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     expect(final.stages['assemble']).toBe('done');
     const report2 = final.report as import('../src/report/models').ReviewReport;
     expect(report2.partial).toBe(false);
-    expect(report2.overall).toBe('topped-up report');
+    // 7f: the synthesis essay REPLACES the merger's overall feedback
+    expect(report2.overall).toBe('## synth');
     // call sequence recomputed from the ACTUAL resume re-entry: NOTHING had
     // completed in attempt 1 (triage failed on the first projection), so the
-    // full pipeline replays: triage, claims, worker, 3 challengers, meta on
-    // strong; surveyor, bibliography, copyedit on small. Challenger count
-    // is 2 section + 1 whole-paper under the e5eedfa fallback split.
-    expect(strong2.calls).toHaveLength(7);
+    // full pipeline replays: triage, claims, worker, 3 challengers, meta,
+    // synthesis, validate on strong; surveyor, bibliography, copyedit on
+    // small. Challenger count is 2 section + 1 whole-paper under the e5eedfa
+    // fallback split.
+    expect(strong2.calls).toHaveLength(9);
     expect(small2.calls).toHaveLength(3);
   });
 
@@ -271,7 +275,7 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
           ],
         }),
       );
-      // worker + challengers
+      // worker + challengers + synthesis (7f: rides the meta stage)
       strong2.queue(j({ comments: [] }));
       strong2.queue(j({ validated: [], new_comments: [] }));
       strong2.queue(j({ validated: [], new_comments: [] }));
@@ -292,13 +296,17 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
     );
     // Completed stages did NOT re-call: on this cap only triage completes
     // (claims is gated before its first call), so strong2 must never replay
-    // the triage USER prompt (title line + full manuscript).
+    // the triage USER prompt (title line + full manuscript). The meta
+    // ('Triage: ...') and synthesis ('Triage:\n----') prompts share the title
+    // line but use a bare 'Triage' marker, not the triage prompt's
+    // 'Manuscript (may be truncated):' body, so the marker below stays
+    // unambiguous (7f synthesis added a second title-line call).
     if (doneStages.includes('triage')) {
       expect(
         strong2.calls.every(
           (c) =>
             !c.messages[1]!.content.startsWith(
-              'Manuscript title: Test Paper\n\nManuscript',
+              'Manuscript title: Test Paper\n\nManuscript (may be truncated):',
             ),
         ),
       ).toBe(true);
@@ -306,7 +314,8 @@ describe('budget exhaustion -> top-up -> resume completes', () => {
   });
 });
 
-/** bibliography + meta + copyedit tail (validate skipped: no comments). */
+/** bibliography + meta + copyedit tail (7f: the doi finding from the offline
+ * resolution rides the merged stream, so validate runs too). */
 function queueChallengeTail(strong: ScriptedProvider, small: ScriptedProvider): void {
   small.queue(
     j({
@@ -317,6 +326,8 @@ function queueChallengeTail(strong: ScriptedProvider, small: ScriptedProvider): 
   );
   strong.queue(
     j({ overall_feedback: 'resumed to completion', recommendation: 'minor revision' }),
+    j({ overall_feedback: '## synth' }), // synthesis (7f)
+    j({ rejected: [], comments: [] }), // validate over the merged stream
   );
   small.queue(j({ items: [] }));
 }
@@ -334,6 +345,8 @@ describe('copyedit knob gates', () => {
     const strong = new ScriptedProvider();
     queueHead(strong);
     strong.queue(j({ overall_feedback: 'done', recommendation: 'accept' }));
+    strong.queue(j({ overall_feedback: '## synth' })); // synthesis (7f)
+    strong.queue(j({ rejected: [], comments: [] })); // validate over the merged stream
     const small = new ScriptedProvider();
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
@@ -371,6 +384,8 @@ describe('copyedit knob gates', () => {
     const strong = new ScriptedProvider();
     queueHead(strong);
     strong.queue(j({ overall_feedback: 'done', recommendation: 'accept' }));
+    strong.queue(j({ overall_feedback: '## synth' })); // synthesis (7f)
+    strong.queue(j({ rejected: [], comments: [] })); // validate over the merged stream
     const small = new ScriptedProvider();
     small.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
@@ -431,9 +446,13 @@ describe('challengers respect the budget affordance gate (81f5a61)', () => {
         model: 'm-strong',
         role: 'strong',
         callType: 'section_challenger',
+        // Huge TOKEN counts (not cost): the empirical unit-cost EMA is
+        // token-based, so this trips ONLY the challenger affordance gates.
+        // Keeping costUsd low leaves actual spend small so the other
+        // affordance-gated calls (synthesis, copyedit) still run.
         inputTokens: 5_000_000,
         outputTokens: 1_000_000,
-        costUsd: 1_000_000,
+        costUsd: 0.001,
       })),
     ];
     const autoSettings = makeSettings({
@@ -471,26 +490,13 @@ describe('challengers respect the budget affordance gate (81f5a61)', () => {
         ],
       }),
     );
-    // NO challenger replies: their gate must trip. Tail order: survey,
-    // defense(small)+adjudication(strong) on the surviving candidate,
-    // bibliography, meta, copyedit.
+    // NO challenger replies: their gate must trip. The restored preset-
+    // tracking plan has defense_round=false (makeSettings review block), so
+    // no defense/adjudication calls either. Tail order: survey(small),
+    // bibliography entries(small), meta(strong), synthesis(strong, 7f),
+    // validate(strong, merged stream), copyedit(small).
     small2.queue(
       j({ selected: [], state_of_the_art_notes: '', missing_references: [] }),
-    );
-    small2.queue(j({ defense: 'weak', defense_strength: 'weak' }));
-    strong2.queue(
-      j({
-        verdict: 'upheld',
-        reason: 'ok',
-        comment: {
-          title: 'count mismatch',
-          paragraph_anchor: 'bootstrap with 999 replications',
-          quote: 'bootstrap with 999 replications',
-          message: 'the count contradicts Table 1',
-          score: 0.6,
-          category: 'consistency',
-        },
-      }),
     );
     small2.queue(
       j({
@@ -501,6 +507,11 @@ describe('challengers respect the budget affordance gate (81f5a61)', () => {
     );
     strong2.queue(
       j({ overall_feedback: 'gated but assembled', recommendation: 'minor' }),
+      // synthesis is affordance-gated OFF here (the restored plan's projected
+      // remainder at this pricing exceeds the $52 budget), so only the
+      // validator consumes the last slot — synthesis e2e coverage lives in
+      // pipeline_e2e.test.ts.
+      j({ rejected: [], comments: [] }),
     );
     small2.queue(j({ items: [] }));
     const second = await drain(
@@ -518,7 +529,10 @@ describe('challengers respect the budget affordance gate (81f5a61)', () => {
     expect(report.comments.map((c) => c.comment)).toContain(
       'the count contradicts Table 1',
     );
-    // strong made exactly: inventory, worker, adjudication, meta — zero
+    // meta succeeded (its overall survives — synthesis is gated off here by
+    // the projection; covered in pipeline_e2e.test.ts instead).
+    expect(report.overall).toBe('gated but assembled');
+    // strong made exactly: cataloguer, claim worker, meta, validate — zero
     // challenger calls (their users start with 'Section:').
     expect(strong2.calls).toHaveLength(4);
     expect(
