@@ -340,6 +340,34 @@ describe('verifyClaims', () => {
     expect(comments[0]!.severity).toBe(0.2);
     expect(comments[0]!.comment).toBe('m');
   });
+  it('uses the resolved plan-knob cap over the depth preset when provided', async () => {
+    const calls: { user: string }[] = [];
+    const fn = async (_role: 'strong' | 'small', _sys: string, user: string) => {
+      calls.push({ user });
+      return {
+        kind: 'ok' as const,
+        value: { comments: [] },
+      };
+    };
+    const claims = [
+      claim('c1', 'central', 'logical'),
+      claim('c2', 'central', 'logical'),
+      claim('c3', 'supporting', 'logical'),
+      claim('c4', 'peripheral', 'logical'),
+    ];
+    // The tier preset would allow more; the plan knob caps at 2.
+    await verifyClaims({
+      callJson: fn,
+      doc: makeDoc(),
+      claims,
+      settings: makeSettings(),
+      maxClaims: 2,
+    });
+    expect(calls).toHaveLength(2);
+    // central claims first (importance ordering preserved)
+    expect(calls[0]!.user).toContain('[c1]');
+    expect(calls[1]!.user).toContain('[c2]');
+  });
 });
 
 // ------------------------------------------------- pure helpers: mentions etc --

@@ -74,6 +74,8 @@ export interface RunState {
    */
   plan?: unknown;
   ledgerCalls?: {
+    /** model id (added 7c-review: needed to re-book records on resume). */
+    model?: string;
     role: string;
     callType: string;
     inputTokens: number;

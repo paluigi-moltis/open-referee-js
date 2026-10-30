@@ -118,7 +118,13 @@ export async function runBibliographyAudit(init: {
     init.resolution ?? '(resolution unavailable)',
     renderPack(pack, 25),
   );
-  const res = await callJsonWithRepair(callJson, 'small', bibliographySystem, user);
+  const res = await callJsonWithRepair(
+    callJson,
+    'small',
+    bibliographySystem,
+    user,
+    'bibliography',
+  );
   if (res.kind === 'budget') return { audit: emptyAudit(), budget: res.error };
   // Python catches LLMError (which the JSON-repair retry also raises) and
   // continues with the empty audit.

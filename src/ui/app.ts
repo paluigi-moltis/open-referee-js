@@ -898,9 +898,18 @@ export function mountApp(root: HTMLElement): void {
 
     let activeProviders: Record<string, ChatProvider> | null = null;
     (async () => {
+      const progress = new ProgressController(progressRoot);
+      // Projected cost before the first call (7c spec: estimate display —
+      // same cost model as Python's /api/estimate, zero LLM calls).
+      const est = projectedCost(settings, doc);
+      if (est) {
+        const tierEst = est.estimates[est.preset];
+        if (tierEst !== undefined) {
+          progress.setSpend(`Projected (${est.preset}): $${tierEst.toFixed(2)}`);
+        }
+      }
       const providers = await buildProviders();
       activeProviders = providers;
-      const progress = new ProgressController(progressRoot);
       const gen = runReview({
         doc: doc,
         settings,
@@ -951,14 +960,66 @@ export function mountApp(root: HTMLElement): void {
                 runState: state,
                 settings,
                 onResume: () => {
-                  // Reload the persisted state and re-enter the pipeline —
-                  // the existing resume machinery does the rest.
+                  // Reload the persisted state and re-enter the pipeline
+                  // through the REAL resume path (doc:null + resume:{state}
+                  // — runBtn.click() would start a fresh run).
                   void (async () => {
                     const saved = await loadRun(state!.runId);
                     if (!saved) return;
                     output.replaceChildren();
-                    runBtn.click();
-                  })();
+                    const progress = new ProgressController(progressRoot);
+                    const providers = await buildProviders();
+                    activeProviders = providers;
+                    const gen = runReview({
+                      doc: null as unknown as Document,
+                      settings,
+                      providers: providers as {
+                        strong: ChatProvider;
+                        small: ChatProvider;
+                      },
+                      searchApiKeys: settings.searchApiKeys,
+                      resume: { state: saved, settings },
+                      onEvent: (e, p) => progress.onEvent(e, p),
+                    });
+                    let final: RunState | undefined;
+                    for (;;) {
+                      const next = await gen.next();
+                      if (next.done) {
+                        final = next.value;
+                        break;
+                      }
+                    }
+                    progress.finish(
+                      final?.partial
+                        ? 'Resumed run finished (partial report)'
+                        : 'Resumed run finished — report ready',
+                    );
+                    if (
+                      final &&
+                      final.report !== undefined &&
+                      typeof final.report === 'object'
+                    ) {
+                      const merged = el('div', {});
+                      if (final.docData) {
+                        merged.appendChild(
+                          manuscriptView(
+                            documentFromData(final.docData as DocumentData),
+                          ),
+                        );
+                      }
+                      merged.appendChild(
+                        reportView(
+                          final.report as ReviewReport,
+                          final,
+                          merged.firstChild as HTMLElement | null,
+                        ),
+                      );
+                      output.replaceChildren(merged);
+                    }
+                  })().catch((err: unknown) => {
+                    errorBox.textContent = `Resume failed: ${err instanceof Error ? err.message : String(err)}`;
+                    errorBox.hidden = false;
+                  });
                 },
               }),
             );

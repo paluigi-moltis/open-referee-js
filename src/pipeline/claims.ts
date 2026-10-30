@@ -193,6 +193,7 @@ export async function runClaimInventory(init: {
     'strong',
     promptsClaims.CLAIM_INVENTORY_SYSTEM,
     user,
+    'claim_inventory',
   );
   if (res.kind === 'budget') return { claims: [], budget: res.error };
   if (res.kind !== 'ok') return { claims: [] };
@@ -234,6 +235,8 @@ export async function verifyClaims(init: {
   doc: Document;
   claims: Record<string, unknown>[];
   settings: AppSettings;
+  /** Resolved plan-knob claim cap (Python knobs.max_claims); preset fallback. */
+  maxClaims?: number;
   onEvent?: ClaimProgress;
   /** A worker failing (LLMError/invalid JSON even after repair) marks the verify stage partial. */
   onWorkerError?: () => void;
@@ -246,7 +249,10 @@ export async function verifyClaims(init: {
       (order[String(a['importance']).toLowerCase()] ?? 1) -
       (order[String(b['importance']).toLowerCase()] ?? 1),
   );
-  const selected = ordered.slice(0, preset.maxClaims);
+  // Python: selected = ordered[: knobs.max_claims] — the resolved plan knob
+  // (deterministic plan in auto mode), not the raw user depth preset.
+  const maxClaims = init.maxClaims ?? preset.maxClaims;
+  const selected = ordered.slice(0, maxClaims);
 
   const results = await mapPool(selected, preset.maxParallelCalls, async (claim) => {
     const ctype = String(claim['type']).toLowerCase();
@@ -265,7 +271,7 @@ export async function verifyClaims(init: {
       components,
       definitions: defs.slice(0, 6000),
     });
-    const res = await callJsonWithRepair(callJson, role, system, user);
+    const res = await callJsonWithRepair(callJson, role, system, user, 'claim_verify');
     // eslint-disable-next-line no-console
     if (res.kind !== 'ok' && res.kind !== 'budget') onWorkerError?.();
     let comments: ReviewComment[] = [];
@@ -443,6 +449,7 @@ export async function defenseRound(init: {
           message: (c.comment || '').slice(0, 1500),
           passage: passage.slice(0, 2500),
         }),
+        'defense',
       );
       if (defense.kind !== 'ok') return c; // gate failure never drops a comment
       const dObj =
@@ -465,6 +472,7 @@ export async function defenseRound(init: {
           defense: String(dObj['defense'] ?? '').slice(0, 2000),
           passage: passage.slice(0, 2500),
         }),
+        'adjudication',
       );
       if (adjudication.kind !== 'ok') return c;
       const aObj =

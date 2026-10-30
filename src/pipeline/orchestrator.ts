@@ -424,9 +424,24 @@ export async function* runReview(
     isAuto,
   );
   // Python _load_or_create_state resume: restore done-call counters + spend
-  // accounting from the persisted ledger records BEFORE any new call.
+  // accounting from the persisted ledger records BEFORE any new call. The
+  // records go to the harness AND the fresh ledger (Python restores
+  // pool.ledger.calls) so actual_cost/projected_final keep the pre-drain
+  // spend after a top-up, and syncBudgetToState re-persists them.
   for (const rec of state.ledgerCalls ?? []) {
     harness.note_record(rec);
+    ledger.restore([
+      {
+        model: String(rec.model ?? ''),
+        role: String(rec.role ?? ''),
+        usage: {
+          promptTokens: Number(rec.inputTokens ?? 0),
+          completionTokens: Number(rec.outputTokens ?? 0),
+        },
+        costUsd: Number(rec.costUsd ?? 0),
+        callType: String(rec.callType ?? 'other'),
+      },
+    ]);
   }
   if (state.plan) {
     // A raised budget resumes with the restored plan at the NEW ceiling.
@@ -572,6 +587,7 @@ export async function* runReview(
     function syncBudgetToState(): void {
       state.plan = harness.plan ? JSON.parse(JSON.stringify(harness.plan)) : undefined;
       state.ledgerCalls = ledger.calls.map((c) => ({
+        model: c.model,
         role: c.role,
         callType: c.callType,
         inputTokens: c.usage.promptTokens,
@@ -957,6 +973,7 @@ export async function* runReview(
           doc,
           claims: artifacts.claims,
           settings,
+          maxClaims: planKnobs.max_claims,
           onWorkerError: () => {
             stageBroken = true;
           },

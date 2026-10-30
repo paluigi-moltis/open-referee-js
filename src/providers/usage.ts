@@ -43,6 +43,14 @@ export class UsageLedger {
     this.pricing = pricing;
   }
 
+  /** Re-book restored records on resume (Python orchestrator.py:654-661
+   * restores pool.ledger.calls from persisted state so pre-drain spend
+   * stays in actual_cost/projected_final). Records are kept verbatim —
+   * no re-pricing. */
+  restore(records: readonly CallRecord[]): void {
+    this.calls.push(...records);
+  }
+
   estimateCost(model: string, usage: Usage): number {
     // Unknown models and zero-priced entries are free.
     const p = this.pricing[model];

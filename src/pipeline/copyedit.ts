@@ -68,7 +68,13 @@ export async function runCopyEditStage(init: {
 }): Promise<{ items: CopyeditItem[]; budget?: BudgetExceeded }> {
   const { callJson, doc, manuscript } = init;
   const user = copyeditPrompt(doc.title, manuscript);
-  const res = await callJsonWithRepair(callJson, 'small', copyeditSystem, user);
+  const res = await callJsonWithRepair(
+    callJson,
+    'small',
+    copyeditSystem,
+    user,
+    'copyedit',
+  );
   if (res.kind === 'budget') return { items: [], budget: res.error };
   // Python catches LLMError (which the JSON-repair retry also raises) and
   // continues with no items — the annex never blocks the report.
