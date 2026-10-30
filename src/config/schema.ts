@@ -1,5 +1,11 @@
 export type ProviderType =
-  'openai_compatible' | 'anthropic' | 'gemini' | 'ollama' | 'vllm' | 'fake';
+  | 'openai_compatible'
+  | 'anthropic'
+  | 'gemini'
+  | 'ollama'
+  | 'vllm'
+  | 'fake'
+  | 'decision';
 
 export interface ProviderConfig {
   type: ProviderType;

@@ -141,6 +141,30 @@ describe('mergeSettings', () => {
     expect(mergeSettings({}).budget).toBeUndefined();
   });
 
+  it('round-trips the Stage-7e optional decision role (universal rule)', () => {
+    const role = { provider: 'fakedec', model: 'decider-fake' };
+    expect(mergeSettings({ decisionRole: role }).decisionRole).toEqual(role);
+    // temperature/maxTokens ride along when well-typed
+    expect(
+      mergeSettings({
+        decisionRole: { ...role, temperature: 0.2, maxTokens: 512 },
+      }).decisionRole,
+    ).toEqual({ ...role, temperature: 0.2, maxTokens: 512 });
+    // half-bound role (missing model) is not a role
+    expect(
+      mergeSettings({ decisionRole: { provider: 'fakedec' } }).decisionRole,
+    ).toBeUndefined();
+    // non-object / wrong-typed fields dropped
+    expect(mergeSettings({ decisionRole: 'decider' }).decisionRole).toBeUndefined();
+    expect(
+      mergeSettings({
+        decisionRole: { provider: 'fakedec', model: 'm', temperature: 'warm' },
+      }).decisionRole,
+    ).toEqual({ provider: 'fakedec', model: 'm' });
+    // absent decision role stays absent (DM layer dormant)
+    expect(mergeSettings({}).decisionRole).toBeUndefined();
+  });
+
   it('round-trips the 7c PlanKnob overrides on the review block', () => {
     const review = {
       recompute: false,

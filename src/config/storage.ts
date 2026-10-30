@@ -24,6 +24,7 @@ function mergeProviderConfig(
     'ollama',
     'vllm',
     'fake',
+    'decision',
   ];
   for (const [name, cfg] of Object.entries(raw)) {
     if (!isRecord(cfg) || typeof cfg['type'] !== 'string') continue;

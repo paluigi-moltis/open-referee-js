@@ -2,6 +2,7 @@ import type { ChatProvider } from './base';
 import { LLMError } from './base';
 import type { ProviderType } from '../config/schema';
 import { AnthropicProvider } from './anthropic';
+import { DecisionsClient } from './decisions';
 import { FakeProvider } from './fake';
 import { GeminiProvider } from './gemini';
 import { OllamaProvider, DEFAULT_OLLAMA_BASE_URL } from './ollama';
@@ -17,6 +18,37 @@ export interface CreateProviderOptions {
   maxRetries?: number;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Build a DecisionsClient from a resolved ProviderConfig of type 'decision'
+ * (Stage 7e; Python build_decision_provider). The decision role MUST bind to
+ * a 'decision'-typed provider with a base URL — the /v1/decisions contract is
+ * not served by chat endpoints.
+ */
+export function createDecisionProvider({
+  baseUrl,
+  apiKey,
+  rateLimiter,
+  requestTimeoutS,
+  maxRetries,
+  fetchImpl,
+  sleep,
+}: Omit<CreateProviderOptions, 'providerType'>): DecisionsClient {
+  if (!baseUrl) {
+    throw new LLMError('Decision provider needs a base_url');
+  }
+  return new DecisionsClient({
+    providerName: 'decision',
+    model: '',
+    baseUrl,
+    apiKey,
+    rateLimiter,
+    fetchImpl,
+    timeoutS: requestTimeoutS,
+    maxRetries,
+    sleep,
+  });
 }
 
 /**
@@ -89,6 +121,13 @@ export function createProvider({
       });
     case 'fake':
       return new FakeProvider();
+    case 'decision': {
+      // A 'decision' provider cannot fill a chat role: the /v1/decisions API
+      // answers typed questions, not free text (Python build_provider raises).
+      throw new LLMError(
+        "Provider type 'decision' cannot fill chat roles — bind it to the optional decision role instead",
+      );
+    }
     default: {
       throw new LLMError(`Unknown provider type: ${providerType as string}`);
     }

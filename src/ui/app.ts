@@ -46,6 +46,7 @@ const PROVIDER_TYPES: ProviderType[] = [
   'gemini',
   'ollama',
   'vllm',
+  'decision',
 ];
 const ROLES = ['strong', 'small', 'vision'] as const;
 
@@ -261,6 +262,12 @@ function settingsPanel(settings: AppSettings, onChange: () => void): SettingsUiH
           bindingsChanged = true;
         }
       }
+      // Stage 7e: a removed decision-provider binding drops the role entirely
+      // (an unbound decision role is the documented dormant state).
+      if (settings.decisionRole?.provider === name) {
+        settings.decisionRole = undefined;
+        bindingsChanged = true;
+      }
       saveSettings(settings);
       row.remove();
       rebuildRoleSelects();
@@ -413,6 +420,69 @@ function settingsPanel(settings: AppSettings, onChange: () => void): SettingsUiH
     roleSelects.set(role, sel);
     fieldset.appendChild(
       el('div', { class: 'row' }, el('label', {}, `${role} role`, sel, model)),
+    );
+  }
+
+  // ---- decision role (Stage 7e) ----
+  // Optional binding to a provider of type 'decision' (/v1/decisions API).
+  // Unbound (default) = the DM layer is dormant and every stage uses its
+  // labelled-LLM fallback with byte-identical call sequences.
+  {
+    const dr = settings.decisionRole ?? { provider: '', model: '' };
+    const decSel = el('select', {
+      id: 'role-provider-decision',
+      'aria-label': 'provider for decision role',
+    });
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = '— none (decision models disabled) —';
+    decSel.appendChild(emptyOpt);
+    for (const name of Object.keys(settings.providers)) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (dr.provider === name) opt.selected = true;
+      decSel.appendChild(opt);
+    }
+    decSel.addEventListener('change', () => {
+      const v = decSel.value;
+      if (!v && !settings.decisionRole?.model) {
+        delete settings.decisionRole;
+      } else {
+        settings.decisionRole = {
+          ...(settings.decisionRole ?? { model: '' }),
+          provider: v,
+        };
+      }
+      saveSettings(settings);
+      onChange();
+    });
+    const decModel = el('input', {
+      type: 'text',
+      id: 'decision-model',
+      placeholder: 'decision model name',
+      value: dr.model,
+      'aria-label': 'model for decision role',
+    });
+    decModel.addEventListener('change', () => {
+      const v = decModel.value.trim();
+      if (!v && !settings.decisionRole?.provider) {
+        delete settings.decisionRole;
+      } else {
+        settings.decisionRole = {
+          ...(settings.decisionRole ?? { provider: '' }),
+          model: v,
+        };
+      }
+      saveSettings(settings);
+      onChange();
+    });
+    fieldset.appendChild(
+      el(
+        'div',
+        { class: 'row' },
+        el('label', {}, 'decision role (optional)', decSel, decModel),
+      ),
     );
   }
 
