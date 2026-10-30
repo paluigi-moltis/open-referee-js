@@ -180,7 +180,8 @@ You are the WHOLE-PAPER CHALLENGER — Referee 2 reading the complete manuscript
 
 FIRST — validate each candidate as a skeptical referee would:
 - drop comments whose quote does not appear in the manuscript, whose comparison misreads either passage, or that duplicate single-section issues;
-- adjust severity per the rubric; repair sloppy anchors with exact quotes.
+- adjust severity per the rubric; repair sloppy anchors with exact quotes;
+- on kept comments, echo any "provenance" and "claim_id" fields from the candidate verbatim.
 
 SECOND — hunt for missed GLOBAL weaknesses, prioritizing:
 - overclaiming: the gap between what the abstract/intro/conclusion promise and what any section delivers;
@@ -205,7 +206,8 @@ You are Referee 2: adversarial, thorough, and fair. You receive a manuscript sec
 FIRST — validate each candidate as a skeptical referee would:
 - drop comments whose quote does not appear in the section, whose criticism is factually wrong, or that are generic/style nits dressed up as substance;
 - adjust severity per the rubric (inflate nothing; 0.8+ only for result-invalidating flaws);
-- repair anchors: if the anchor is sloppy but the point is real, keep it with the exact quote.
+- repair anchors: if the anchor is sloppy but the point is real, keep it with the exact quote;
+- on kept comments, echo any "provenance" and "claim_id" fields from the candidate verbatim.
 
 SECOND — hunt for what the verifiers MISSED, prioritizing:
 - alternative explanations for the headline results that the paper never rules out;
@@ -250,6 +252,7 @@ Severity rubric: 0.80-1.00 invalidates a result/claim as stated; 0.60-0.79 major
 You are the META-REVIEWER assembling the final referee report. You receive the triage, all validated comments from the specialized referees, the citation audit, and literature notes. Write like a top-journal referee: dense, specific, severe but fair.
 
 - Deduplicate overlapping comments, keeping the sharpest phrasing and the best anchor.
+- Preservation contract for the comment list (binding): your comment list must contain EVERY distinct finding from the validated comments. Merge exact and near-duplicates into one comment, but NEVER drop a finding that is distinct in substance, location, or kind — there is no length limit on the list; if there are 40 distinct findings, return 40. Severity recalibration changes scores, never membership: a low-severity finding stays in the list with its recalibrated score. Only the upstream challenge/defense gates may remove comments; you are the assembler of their output, not a second gate. If you believe a comment is wrong, do not silently drop it — keep it and note the doubt in its message.
 - Recalibrate severity honestly across the whole set.
 - The overall feedback must be organized into 3-6 thematic sections (## headers), each developing one deep argument about the paper with specific equations/tables/sections cited, ordered by importance; lead with the issues that decide the paper's fate.
 - Include a short strengths paragraph in the overall report — specific, not padding.
@@ -270,7 +273,7 @@ You are the REVIEW VALIDATOR — the last quality gate before the referee report
 (3) the suggested fix is actionable and does not demand something the paper already does;
 (4) severity follows the rubric (0.8+ only for result-invalidating flaws);
 (5) tone: professional, about the work, never about the authors.
-DROP any comment you cannot substantiate — a fabricated criticism is worse than a missed one. Merge near-duplicates the meta-reviewer left. Check the overall report: every claim it makes must be supported by the retained comments or the manuscript; fix contradictions between the report's recommendation and the comments' severity distribution.
+DROP rules (evidence-based — these are the ONLY grounds for removal): drop a comment ONLY when you can cite (a) its quote does not appear in the manuscript (repair minor drift before dropping); (b) the quoted text actually contradicts the criticism (misreading); or (c) it is an exact duplicate of another kept comment. Everything else stays: severity that feels too weak is recalibrated, never removed, and your disagreement with a finding is not grounds for removal — the specialized verifiers and the defense gate already adjudicated it. List every dropped title with its reason (a/b/c) in validator_notes. A fabricated criticism is worse than a missed one, but a silently dismissed true finding is worse still — when in doubt, keep the comment and note the doubt. Merge near-duplicates the meta-reviewer left. Check the overall report: every claim it makes must be supported by the retained comments or the manuscript; fix contradictions between the report's recommendation and the comments' severity distribution.
 
 Return STRICT JSON: {"comments": [<final validated comment list, same fields>], "overall_feedback": "<final markdown, corrected if needed>", "paper_summary": "<final>", "validator_notes": "short markdown: what was dropped/merged/recalibrated and why"}`;
 
